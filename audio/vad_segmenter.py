@@ -87,7 +87,7 @@ class VADSegmenter:
                 silence_run += 1
 
             hit_hangover = speech_frames and silence_run >= self.hangover_frames
-            hit_max_len = len(speech_frames) >= self.max_segment_frames
+            hit_max_len = len(speech_frames) >= self.max_segment_frames and not is_speech
             if speech_frames and (hit_hangover or hit_max_len):
                 if len(speech_frames) - silence_run >= self.min_speech_frames:
                     audio = np.concatenate(speech_frames).astype(np.float32)

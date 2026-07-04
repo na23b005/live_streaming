@@ -34,14 +34,15 @@ class Config:
 
     # --- VAD / endpointing ---
     vad_aggressiveness: int = 2        # 0-3, higher = more aggressive at filtering non-speech
-    silence_hangover_ms: int = 600     # trailing silence required before a segment is closed
+    silence_hangover_ms: int = 500     # trailing silence required before a segment is closed
     min_speech_ms: int = 250           # ignore blips shorter than this (coughs, clicks)
-    max_segment_s: float = 20.0        # hard cap so one long monologue doesn't grow forever
+    max_segment_s: float = 10.0        # hard limit for segment duration, cut only at silent boundaries
 
     # --- STT ---
-    model_size: str = "base.en"        # try "tiny.en" first if this lags on your CPU
-    compute_type: str = "int8"         # int8 = fastest on CPU, negligible accuracy loss
-    device: str = "auto"               # "auto" | "cpu" | "cuda" (see stt/faster_whisper_engine.py)
+    engine_type: str = "moonshine"     # "faster-whisper" | "moonshine"
+    model_size: str = "moonshine/base"  # try "moonshine/tiny" if this lags or for lower memory
+    compute_type: str = "float"         # "float" for Moonshine, "int8" for Whisper
+    device: str = "dml"                # "dml" | "cpu" | "cuda"
     
     # Model download folder on the E drive
     model_download_root: str = str(PROJECT_ROOT / "models")

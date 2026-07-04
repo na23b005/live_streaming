@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Local Transcribe AI</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Main Dashboard Card -->
+        <div class="dashboard-card">
+            <!-- Header -->
+            <div class="card-header">
+                <div class="title-section">
+                    <span class="logo-icon">🚀</span>
+                    <h1>Live Meeting Assistant</h1>
+                </div>
+                <div class="status-pill">
+                    <span class="pulse-dot"></span>
+                    <span class="status-text">Idle</span>
+                </div>
+            </div>
+            
+            <div class="device-info" id="hw-status">Loading hardware profile...</div>
+
+            <!-- Scrollable Transcript Area -->
+            <div class="transcript-viewport" id="transcript-viewport">
+                <div class="empty-state">
+                    <span class="empty-icon">🎙️</span>
+                    <h3>Ready to Transcribe</h3>
+                    <p>Attend a meeting, play a video, or speak into your mic.<br>Click "Start Session" below to capture speech with live diarization.</p>
+                </div>
+            </div>
+
+            <!-- Controls and Actions -->
+            <div class="controls-panel">
+                <button class="primary-btn" id="btn-action">Start Session</button>
+                
+                <div class="action-buttons">
+                    <button class="action-btn" onclick="copyTranscript()"> Copy</button>
+                    <button class="action-btn" onclick="exportTranscript()"> Save TXT</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Statistics Modal (Displayed at the end) -->
+    <div class="modal-overlay" id="stats-modal">
+        <div class="modal-card">
+            <h2>Session Complete</h2>
+            <p class="modal-subtitle">Here is your transcript summary and performance statistics.</p>
+            
+            <div class="stats-grid">
+                <div class="stat-box">
+                    <span class="stat-val" id="stat-duration">0.0s</span>
+                    <span class="stat-lbl">Session Duration</span>
+                </div>
+                <div class="stat-box">
+                    <span class="stat-val" id="stat-rtf">0.000</span>
+                    <span class="stat-lbl">Real-Time Factor</span>
+                </div>
+            </div>
+            
+            <div class="channel-stats">
+                <div class="channel-row">
+                    <h3>Aravind</h3>
+                    <p id="stat-mic-segments">Segments: 0</p>
+                    <p id="stat-mic-time">Inference Time: 0.0s</p>
+                </div>
+                <div class="channel-row">
+                    <h3>Other Speaker</h3>
+                    <p id="stat-sys-segments">Segments: 0</p>
+                    <p id="stat-sys-time">Inference Time: 0.0s</p>
+                </div>
+            </div>
+            
+            <button class="modal-close" onclick="closeModal()">View Full Transcript</button>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

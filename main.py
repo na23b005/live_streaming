@@ -3,6 +3,14 @@ import signal
 import sys
 import time
 
+# Force stdout/stderr to use UTF-8 encoding on Windows to avoid console print crashes.
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except AttributeError:
+        pass
+
 # Import config first so Hugging Face environment variables are set before other modules load.
 from config import Config
 
@@ -11,6 +19,7 @@ from audio.vad_segmenter import VADSegmenter
 from pipeline.channel_worker import ChannelWorker, TranscriptEvent
 from pipeline.transcript_normalizer import format_line
 from stt.faster_whisper_engine import FasterWhisperEngine
+from stt.moonshine_dml_engine import MoonshineDirectMLEngine
 
 # Suppress the soundcard "data discontinuity in recording" warnings.
 # We do this here after importing audio.capture because soundcard internally calls
@@ -37,22 +46,35 @@ def main() -> None:
     out_queue: "queue.Queue[TranscriptEvent]" = queue.Queue()
     session_start = time.perf_counter()
 
-    print(f"Loading Whisper model '{cfg.model_size}' (device={cfg.device})...")
+    print(f"Loading STT model '{cfg.model_size}' (engine={cfg.engine_type}, device={cfg.device})...")
     # Two separate model instances so each channel can transcribe independently
-    # without waiting on the other. Uses more RAM; if that's tight, see the
-    # README note on sharing a single instance across both channels.
-    mic_engine = FasterWhisperEngine(
-        cfg.model_size,
-        cfg.device,
-        cfg.compute_type,
-        download_root=cfg.model_download_root,
-    )
-    sys_engine = FasterWhisperEngine(
-        cfg.model_size,
-        cfg.device,
-        cfg.compute_type,
-        download_root=cfg.model_download_root,
-    )
+    # without waiting on the other.
+    if cfg.engine_type == "moonshine":
+        mic_engine = MoonshineDirectMLEngine(
+            cfg.model_size,
+            cfg.device,
+            compute_type=cfg.compute_type,
+            download_root=cfg.model_download_root,
+        )
+        sys_engine = MoonshineDirectMLEngine(
+            cfg.model_size,
+            cfg.device,
+            compute_type=cfg.compute_type,
+            download_root=cfg.model_download_root,
+        )
+    else:
+        mic_engine = FasterWhisperEngine(
+            cfg.model_size,
+            cfg.device,
+            cfg.compute_type,
+            download_root=cfg.model_download_root,
+        )
+        sys_engine = FasterWhisperEngine(
+            cfg.model_size,
+            cfg.device,
+            cfg.compute_type,
+            download_root=cfg.model_download_root,
+        )
     print(f"Model loaded. Running on: {mic_engine.device}")
 
     mic_worker = ChannelWorker(
