@@ -1,0 +1,85 @@
+# ==========================
+# Python
+# ==========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# ==========================
+# VS Code
+# ==========================
+.vscode/
+
+# ==========================
+# Logs
+# ==========================
+*.log
+transcript.log
+
+# ==========================
+# Environment variables
+# ==========================
+.env
+.env.*
+
+# ==========================
+# Python cache
+# ==========================
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ==========================
+# Hugging Face cache
+# ==========================
+.cache/
+.cache/huggingface/
+
+# ==========================
+# Downloaded Models
+# (large files - don't commit)
+# ==========================
+models/
+*.bin
+*.safetensors
+*.onnx
+*.gguf
+
+# ==========================
+# Xet cache
+# ==========================
+.xet/
+
+# ==========================
+# OS files
+# ==========================
+.DS_Store
+Thumbs.db
+
+# ==========================
+# Build files
+# ==========================
+build/
+dist/
+*.egg-info/
+
+# ==========================
+# Temporary files
+# ==========================
+*.tmp
+*.temp
+*.bak
+
+# ==========================
+# IDE files
+# ==========================
+.idea/
+*.iml
