@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { RefreshCw, Play } from 'lucide-react';
 import type { Meeting } from '../types';
+
 
 interface DashboardProps {
   meetings: Meeting[];
@@ -19,7 +20,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
   backendOnline,
   hardwareInfo
 }) => {
-  const [detectable, setDetectable] = useState(true);
+
 
   // Group meetings by Today, Yesterday, Older
   const today = new Date().toDateString();
@@ -72,18 +73,6 @@ export const Dashboard: React.FC<DashboardProps> = ({
         </div>
 
         <div className="controls-right">
-          <div className="detectable-toggle">
-            <span>Detectable</span>
-            <label className="toggle-switch">
-              <input 
-                type="checkbox" 
-                checked={detectable} 
-                onChange={(e) => setDetectable(e.target.checked)} 
-              />
-              <span className="toggle-slider"></span>
-            </label>
-          </div>
-
           <button 
             className="btn-start-natively" 
             onClick={onStartRecording}

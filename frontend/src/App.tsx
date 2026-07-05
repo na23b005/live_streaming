@@ -4,14 +4,20 @@ import { MeetingDetail } from './components/MeetingDetail';
 import { LiveTranscribeOverlay } from './components/LiveTranscribeOverlay';
 import type { Meeting } from './types';
 
+import { SettingsProvider, useSettings } from './components/SettingsContext';
+import { TitleBar } from './components/TitleBar';
+import { SettingsModal } from './components/SettingsModal';
+
 type AppView = 'dashboard' | 'meeting-detail' | 'live-transcribing';
 
-function App() {
+function AppContent() {
   const [view, setView] = useState<AppView>('dashboard');
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [selectedMeeting, setSelectedMeeting] = useState<Meeting | null>(null);
   const [backendOnline, setBackendOnline] = useState(false);
   const [hardwareInfo, setHardwareInfo] = useState('Loading hardware profile...');
+  const { settings } = useSettings();
+  const [searchQuery, setSearchQuery] = useState('');
 
   // Initialize and check status
   const checkStatus = async () => {
@@ -94,7 +100,11 @@ function App() {
 
   const handleStopRecording = async () => {
     try {
-      const res = await fetch('/api/stop', { method: 'POST' });
+      const res = await fetch('/api/stop', { 
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ do_not_save: settings.doNotSaveMeetings })
+      });
       if (res.ok) {
         const data = await res.json();
         if (data.status === 'stopped') {
@@ -144,9 +154,17 @@ function App() {
 
   return (
     <div className="app-container">
+      {/* Show TitleBar only on dashboard and detail view */}
+      {view !== 'live-transcribing' && (
+        <TitleBar 
+          searchQuery={searchQuery}
+          onSearchChange={setSearchQuery}
+        />
+      )}
+
       {view === 'dashboard' && (
         <Dashboard
-          meetings={meetings}
+          meetings={meetings.filter(m => m.title.toLowerCase().includes(searchQuery.toLowerCase()))}
           onSelectMeeting={handleSelectMeeting}
           onStartRecording={handleStartRecording}
           onRefresh={handleRefresh}
@@ -169,7 +187,17 @@ function App() {
           onStop={handleStopRecording}
         />
       )}
+
+      <SettingsModal />
     </div>
+  );
+}
+
+function App() {
+  return (
+    <SettingsProvider>
+      <AppContent />
+    </SettingsProvider>
   );
 }
 

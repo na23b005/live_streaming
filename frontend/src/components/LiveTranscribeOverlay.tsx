@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { Square, Mic, ChevronUp } from 'lucide-react';
 import type { Segment } from '../types';
+import { useSettings } from './SettingsContext';
 
 interface LiveTranscribeOverlayProps {
   onStop: () => void;
@@ -9,6 +10,7 @@ interface LiveTranscribeOverlayProps {
 export const LiveTranscribeOverlay: React.FC<LiveTranscribeOverlayProps> = ({
   onStop
 }) => {
+  const { settings } = useSettings();
   const [isMinimized, setIsMinimized] = useState(false);
   const [isRequesting, setIsRequesting] = useState(false);
   const [segments, setSegments] = useState<Segment[]>([]);
@@ -99,13 +101,13 @@ export const LiveTranscribeOverlay: React.FC<LiveTranscribeOverlayProps> = ({
 
   // Auto-scroll transcripts
   useEffect(() => {
-    if (scrollRef.current) {
+    if (settings.autoScroll && scrollRef.current) {
       scrollRef.current.scrollTo({
         top: scrollRef.current.scrollHeight,
         behavior: 'smooth'
       });
     }
-  }, [segments, isMinimized]);
+  }, [segments, isMinimized, settings.autoScroll]);
 
   const formatTimestamp = (ts: number) => {
     const mins = Math.floor(ts / 60);
@@ -203,7 +205,12 @@ export const LiveTranscribeOverlay: React.FC<LiveTranscribeOverlayProps> = ({
   };
 
   return (
-    <div className={`live-overlay-container ${isMinimized ? 'minimized' : 'expanded'}`}>
+    <div 
+      className={`live-overlay-container ${isMinimized ? 'minimized' : 'expanded'}`}
+      style={{ 
+        background: isMinimized ? undefined : `rgba(20, 20, 22, ${settings.opacity / 100})`
+      }}
+    >
       {isMinimized ? (
         <button
           className="nexus-minimized-logo"
