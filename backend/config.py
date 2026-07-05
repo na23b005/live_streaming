@@ -10,6 +10,7 @@ PROJECT_ROOT = Path("E:/Local transcribe/local-transcribe")
 PROJECT_ROOT.mkdir(parents=True, exist_ok=True)
 (PROJECT_ROOT / ".cache").mkdir(parents=True, exist_ok=True)
 (PROJECT_ROOT / "models").mkdir(parents=True, exist_ok=True)
+(PROJECT_ROOT / "history").mkdir(parents=True, exist_ok=True)
 
 # Set Hugging Face environment variables to redirect model downloads to the E drive
 os.environ["HF_HOME"] = str(PROJECT_ROOT / ".cache" / "huggingface")
@@ -49,4 +50,5 @@ class Config:
 
     # --- Output ---
     transcript_log_path: str = str(PROJECT_ROOT / "transcript.log")
+    history_dir: str = str(PROJECT_ROOT / "history")
 

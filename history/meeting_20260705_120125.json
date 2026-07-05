@@ -1,0 +1,35 @@
+{
+  "id": "meeting_20260705_120125",
+  "title": "Meeting at 12:01 PM",
+  "date": "2026-07-05T12:01:25.535246",
+  "duration": 24.99,
+  "segments": [
+    {
+      "speaker": "Me",
+      "start_ts": 96.74181910001789,
+      "end_ts": 97.91129030002048,
+      "text": "They were here."
+    },
+    {
+      "speaker": "Me",
+      "start_ts": 115.28307940001832,
+      "end_ts": 116.48315620000358,
+      "text": "Fashion."
+    }
+  ],
+  "stats": {
+    "duration": 24.99,
+    "mic": {
+      "segments": 7,
+      "duration": 24.99,
+      "inference_time": 2.0674548999522813,
+      "rtf": 0.08273128851349665
+    },
+    "sys": {
+      "segments": 0,
+      "duration": 0.0,
+      "inference_time": 0.0,
+      "rtf": 0.0
+    }
+  }
+}

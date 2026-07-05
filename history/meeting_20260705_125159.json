@@ -1,0 +1,53 @@
+{
+  "id": "meeting_20260705_125159",
+  "title": "Meeting at 12:51 PM",
+  "date": "2026-07-05T12:51:59.436285",
+  "duration": 59.489999999999995,
+  "segments": [
+    {
+      "speaker": "Speaker 1",
+      "start_ts": 2.8333558999875095,
+      "end_ts": 13.0631982999912,
+      "text": "But why start with C in 2026? It is a wonderful foundation on which to build your understanding of how a computer works and how software is built."
+    },
+    {
+      "speaker": "Speaker 1",
+      "start_ts": 13.094116099993698,
+      "end_ts": 23.343179699993925,
+      "text": "It's about as close as you can get to the hardware before things devolve these aesthetically into assembly code, which is much scarier looking code. I see kind of strikes, I think pedagogically this."
+    },
+    {
+      "speaker": "Speaker 1",
+      "start_ts": 23.61858489998849,
+      "end_ts": 33.56249350000871,
+      "text": "Really nice balance of having English like syntax and abstractions on top of lower level primitives that allow you to explore procedural programming."
+    },
+    {
+      "speaker": "Speaker 1",
+      "start_ts": 33.59266460000072,
+      "end_ts": 43.893427800008794,
+      "text": "It's got everything, but it's also a pretty small language. So most anything you want, you need to build yourself. And so we leverage this significantly in CS50 so much so that by mid-semester in week 50,"
+    },
+    {
+      "speaker": "Speaker 1",
+      "start_ts": 43.92286130000139,
+      "end_ts": 55.11384500001441,
+      "text": "Five of the class students are building their own hash tables. And what I think is especially meaningful about C is that you can't just instantiate one of those data structures if you want one like you can in Java. If you want it, you're going to have to build it yourself."
+    }
+  ],
+  "stats": {
+    "duration": 59.489999999999995,
+    "mic": {
+      "segments": 1,
+      "duration": 1.47,
+      "inference_time": 0.46133979997830465,
+      "rtf": 0.31383659862469704
+    },
+    "sys": {
+      "segments": 6,
+      "duration": 58.019999999999996,
+      "inference_time": 5.099211099965032,
+      "rtf": 0.08788712685220669
+    }
+  }
+}

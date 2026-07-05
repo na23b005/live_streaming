@@ -1,0 +1,65 @@
+{
+  "id": "meeting_20260705_120526",
+  "title": "Meeting at 12:05 PM",
+  "date": "2026-07-05T12:05:26.443126",
+  "duration": 77.46000000000001,
+  "segments": [
+    {
+      "speaker": "Speaker 1",
+      "start_ts": 0.07339590002084151,
+      "end_ts": 11.141112300014356,
+      "text": "Like black mirror but the opposite and journalism i was making optimistic technology content and wondering if there were people who also wanted that how are you testing that oh no i i just launched the show"
+    },
+    {
+      "speaker": "Speaker 1",
+      "start_ts": 11.321247200015932,
+      "end_ts": 17.382275500014657,
+      "text": "- Clio, you're one of the fastest growing channels on YouTube right now. How did you break through as YouTube has gotten more saturated?"
+    },
+    {
+      "speaker": "Speaker 1",
+      "start_ts": 17.411938600009307,
+      "end_ts": 28.061307600000873,
+      "text": "I had an opinion about what was really exciting to me, what I felt like would fill a sort of white space for me personally. What was it that I was missing from my media diet? And I tried to fill that for"
+    },
+    {
+      "speaker": "Speaker 1",
+      "start_ts": 28.091766199999256,
+      "end_ts": 38.08160880001378,
+      "text": "myself. It was going to be like black mirror, but the opposite and journalism. I was making optimistic technology content and wondering if there were people who also wanted that. How are you testing?"
+    },
+    {
+      "speaker": "Speaker 1",
+      "start_ts": 38.1109909999941,
+      "end_ts": 51.6511857000005,
+      "text": "that oh no I just launched the show Clio you're one of the fastest growing channels on YouTube right now how did you break through as YouTube has gotten more saturated I had an opinion about what was really exciting to me what I felt like would fill a sort of white"
+    },
+    {
+      "speaker": "Speaker 1",
+      "start_ts": 51.711859200004255,
+      "end_ts": 61.92204100001254,
+      "text": "Base for me personally, like what was it that I was missing from my media diet? And I tried to fill that for myself is going to be like black mirror, but the opposite and journalism."
+    },
+    {
+      "speaker": "Speaker 1",
+      "start_ts": 61.95117129999562,
+      "end_ts": 77.69107679999433,
+      "text": "I was making optimistic technology content and wondering if there were people who also wanted that. - How are you testing that? - Oh, no, I just launched the show. - Cleo, you're one of the fastest growing channels on YouTube right now. How did you break through as YouTube has gotten more saturated? - I had an opinion about what"
+    }
+  ],
+  "stats": {
+    "duration": 77.46000000000001,
+    "mic": {
+      "segments": 0,
+      "duration": 0.0,
+      "inference_time": 0.0,
+      "rtf": 0.0
+    },
+    "sys": {
+      "segments": 7,
+      "duration": 77.46000000000001,
+      "inference_time": 5.823032599990256,
+      "rtf": 0.07517470436341667
+    }
+  }
+}

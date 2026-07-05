@@ -1,0 +1,22 @@
+{
+  "id": "meeting_20260705_111026",
+  "title": "Meeting at 11:10 AM",
+  "date": "2026-07-05T11:10:26.119772",
+  "duration": 9.18,
+  "segments": [],
+  "stats": {
+    "duration": 9.18,
+    "mic": {
+      "segments": 4,
+      "duration": 9.18,
+      "inference_time": 0.9846513000084087,
+      "rtf": 0.10726049019699442
+    },
+    "sys": {
+      "segments": 0,
+      "duration": 0.0,
+      "inference_time": 0.0,
+      "rtf": 0.0
+    }
+  }
+}
