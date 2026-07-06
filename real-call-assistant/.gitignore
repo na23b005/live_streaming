@@ -1,0 +1,63 @@
+# ==========================
+# Root and General Cache
+# ==========================
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.temp
+*.bak
+.agents/
+.gemini/
+
+# ==========================
+# Python
+# ==========================
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+
+# ==========================
+# Node / Frontend Build
+# ==========================
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/*.local
+
+# ==========================
+# Tauri Build
+# ==========================
+frontend/src-tauri/target/
+frontend/src-tauri/gen/schemas/
+
+# ==========================
+# Hugging Face Cache & Downloaded Models
+# ==========================
+.cache/
+backend/models/
+*.bin
+*.safetensors
+*.onnx
+*.gguf
+
+# ==========================
+# Local Session Data
+# ==========================
+backend/history/
