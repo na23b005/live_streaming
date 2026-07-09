@@ -25,6 +25,7 @@ class SpeechSegment:
     audio: np.ndarray   # float32 mono, at the configured sample rate
     start_ts: float      # seconds since this segmenter started running
     end_ts: float
+    created_at: float = 0.0
 
 
 class VADSegmenter:
@@ -36,6 +37,7 @@ class VADSegmenter:
         silence_hangover_ms: int,
         min_speech_ms: int,
         max_segment_s: float,
+        rms_threshold: float = 0.0,
     ):
         self.samplerate = samplerate
         self.frame_samples = int(samplerate * frame_ms / 1000)
@@ -43,6 +45,7 @@ class VADSegmenter:
         self.hangover_frames = max(1, silence_hangover_ms // frame_ms)
         self.min_speech_frames = max(1, min_speech_ms // frame_ms)
         self.max_segment_frames = int(max_segment_s * 1000 / frame_ms)
+        self.rms_threshold = rms_threshold
 
     @staticmethod
     def _to_pcm16(chunk: np.ndarray) -> bytes:
@@ -62,7 +65,11 @@ class VADSegmenter:
 
         while not stop_event.is_set():
             try:
-                chunk = in_queue.get(timeout=0.5)
+                item = in_queue.get(timeout=0.5)
+                if isinstance(item, tuple):
+                    timestamp, chunk = item
+                else:
+                    timestamp, chunk = time.perf_counter(), item
             except queue.Empty:
                 continue
 
@@ -72,7 +79,16 @@ class VADSegmenter:
             elif len(chunk) > self.frame_samples:
                 chunk = chunk[: self.frame_samples]
 
+            # WebRTC VAD check
             is_speech = self.vad.is_speech(self._to_pcm16(chunk), self.samplerate)
+            
+            # Absolute energy gate: if frame energy is below self.rms_threshold, treat as silence.
+            # This filters out low-level microphone hum/static that fools WebRTC VAD.
+            if self.rms_threshold > 0.0:
+                rms = np.sqrt(np.mean(chunk**2)) if len(chunk) > 0 else 0.0
+                if rms < self.rms_threshold:
+                    is_speech = False
+
             now_ts = time.monotonic() - t0
 
             if is_speech:
@@ -87,12 +103,18 @@ class VADSegmenter:
                 silence_run += 1
 
             hit_hangover = speech_frames and silence_run >= self.hangover_frames
-            hit_max_len = len(speech_frames) >= self.max_segment_frames and not is_speech
+            # Cut at a natural pause after target length, or unconditionally at 1.5x target length
+            hit_max_len = (len(speech_frames) >= self.max_segment_frames and not is_speech) or (len(speech_frames) >= int(self.max_segment_frames * 1.5))
             if speech_frames and (hit_hangover or hit_max_len):
                 if len(speech_frames) - silence_run >= self.min_speech_frames:
                     audio = np.concatenate(speech_frames).astype(np.float32)
                     out_queue.put(
-                        SpeechSegment(audio=audio, start_ts=speech_start_ts, end_ts=now_ts)
+                        SpeechSegment(
+                            audio=audio,
+                            start_ts=speech_start_ts,
+                            end_ts=now_ts,
+                            created_at=time.perf_counter()
+                        )
                     )
                 speech_frames = []
                 silence_run = 0
@@ -105,5 +127,10 @@ class VADSegmenter:
                 audio = np.concatenate(speech_frames).astype(np.float32)
                 now_ts = time.monotonic() - t0
                 out_queue.put(
-                    SpeechSegment(audio=audio, start_ts=speech_start_ts, end_ts=now_ts)
+                    SpeechSegment(
+                        audio=audio,
+                        start_ts=speech_start_ts,
+                        end_ts=now_ts,
+                        created_at=time.perf_counter()
+                    )
                 )

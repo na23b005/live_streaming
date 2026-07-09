@@ -264,11 +264,11 @@ export const LiveTranscribeOverlay: React.FC<LiveTranscribeOverlayProps> = ({
                 </div>
               ) : (
                 segments.map((segment, index) => {
-                  const isMe = segment.speaker === 'Me';
+                  const isMe = segment.speaker === 'Speaker 1';
                   return (
                     <div key={index} className="transcript-card">
                       <div className="transcript-card-header">
-                        <span className="speaker-name">{isMe ? 'Me' : 'Speaker 1'}</span>
+                        <span className="speaker-name">{segment.speaker}</span>
                         <span className="timestamp">{formatTimestamp(segment.start_ts)}</span>
                       </div>
                       <div className="transcript-card-body">{segment.text}</div>

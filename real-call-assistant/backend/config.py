@@ -6,6 +6,17 @@ from pathlib import Path
 # Define directories relative to backend root dynamically
 BACKEND_DIR = Path(__file__).resolve().parent
 
+# Load environment variables from .env file if it exists
+_env_path = BACKEND_DIR / ".env"
+if _env_path.exists():
+    with open(_env_path, "r", encoding="utf-8") as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _key, _val = _line.split("=", 1)
+                os.environ[_key.strip()] = _val.strip()
+
+
 MODELS_DIR = BACKEND_DIR / "models"
 HISTORY_DIR = BACKEND_DIR / "history"
 
@@ -34,17 +45,30 @@ class Config:
     mic_device: Optional[str] = None   # None = OS default microphone
     speaker_device: Optional[str] = None  # None = OS default output device (loopback source)
 
+    # --- AEC (Acoustic Echo Cancellation) ---
+    enable_aec: bool = True
+    aec_delay_ms: int = 80             # acoustic render-to-capture latency in ms
+    aec_enable_ns: bool = False
+    aec_enable_agc: bool = False
+    aec_ducking_threshold: float = 0.45 # mic_rms / ref_rms ratio below which we duck
+    aec_ref_threshold: float = 0.01     # speaker RMS above which we consider speaker active
+
+
     # --- VAD / endpointing ---
     vad_aggressiveness: int = 2        # 0-3, higher = more aggressive at filtering non-speech
-    silence_hangover_ms: int = 500     # trailing silence required before a segment is closed
+    silence_hangover_ms: int = 300     # trailing silence required before a segment is closed
     min_speech_ms: int = 250           # ignore blips shorter than this (coughs, clicks)
-    max_segment_s: float = 10.0        # hard limit for segment duration, cut only at silent boundaries
+    max_segment_s: float = 5.0         # hard limit for segment duration, cut only at silent boundaries
+    vad_rms_threshold: float = 0.008   # absolute RMS threshold below which frames are treated as silence
 
     # --- STT ---
-    engine_type: str = "moonshine"     # "faster-whisper" | "moonshine"
-    model_size: str = "moonshine/base"  # try "moonshine/tiny" if this lags or for lower memory
-    compute_type: str = "float"         # "float" for Moonshine, "int8" for Whisper
-    device: str = "dml"                # "dml" | "cpu" | "cuda"
+    engine_type: str = os.getenv("STT_ENGINE_TYPE", "moonshine")  # "faster-whisper" | "moonshine" | "remote"
+    model_size: str = os.getenv("STT_MODEL_SIZE", "moonshine/base") # e.g. "remote/distil-large-v3"
+    compute_type: str = "float"         # "float" for Moonshine, "int8" for Whisper, "remote" for Remote
+    device: str = "dml"                # "dml" | "cpu" | "cuda" | "remote"
+    
+    # URL of the remote STT server (RTX 5090 machine via Tailscale)
+    remote_url: str = os.getenv("STT_REMOTE_URL", "http://100.64.0.1:8001/transcribe")
     
     # Model download folder inside backend
     model_download_root: str = str(MODELS_DIR)
@@ -52,4 +76,5 @@ class Config:
     # --- Output ---
     transcript_log_path: str = str(BACKEND_DIR / "transcript.log")
     history_dir: str = str(HISTORY_DIR)
+
 

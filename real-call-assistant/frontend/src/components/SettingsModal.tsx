@@ -17,7 +17,9 @@ import {
   Download,
   Check,
   Zap,
-  HardDrive
+  HardDrive,
+  Mic,
+  MapPin
 } from 'lucide-react';
 import { useSettings } from './SettingsContext';
 
@@ -41,6 +43,15 @@ export const SettingsModal: React.FC = () => {
   const [activeBackendModel, setActiveBackendModel] = React.useState('');
   const [models, setModels] = React.useState<STTModel[]>([]);
   const [recommendedModelName, setRecommendedModelName] = React.useState('Moonshine Tiny');
+  
+  // Audio devices configuration states
+  const [mics, setMics] = React.useState<{id: string, name: string}[]>([]);
+  const [speakers, setSpeakers] = React.useState<{id: string, name: string}[]>([]);
+  const [selectedMic, setSelectedMic] = React.useState('');
+  const [selectedSpeaker, setSelectedSpeaker] = React.useState('');
+  const [inputLevel, setInputLevel] = React.useState(0);
+  const [accent, setAccent] = React.useState('India');
+  const [isTestingSound, setIsTestingSound] = React.useState(false);
 
   const fetchModels = async () => {
     try {
@@ -72,11 +83,164 @@ export const SettingsModal: React.FC = () => {
     }
   };
 
+  const fetchAudioDevices = async () => {
+    try {
+      const res = await fetch('/api/audio-devices');
+      if (res.ok) {
+        const data = await res.json();
+        setMics(data.mics || []);
+        setSpeakers(data.speakers || []);
+      }
+    } catch (e) {
+      console.error('Failed to fetch audio devices:', e);
+    }
+  };
+
+  const fetchAudioConfig = async () => {
+    try {
+      const res = await fetch('/api/config');
+      if (res.ok) {
+        const data = await res.json();
+        setSelectedMic(data.mic_device || '');
+        setSelectedSpeaker(data.speaker_device || '');
+      }
+    } catch (e) {
+      console.error('Failed to fetch audio config:', e);
+    }
+  };
+
+  const handleDeviceChange = async (type: 'mic' | 'speaker', deviceId: string) => {
+    try {
+      const payload = type === 'mic' ? { mic_device: deviceId } : { speaker_device: deviceId };
+      const res = await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (res.ok) {
+        if (type === 'mic') {
+          setSelectedMic(deviceId);
+        } else {
+          setSelectedSpeaker(deviceId);
+        }
+      }
+    } catch (e) {
+      console.error('Failed to update config on the backend:', e);
+    }
+  };
+
+  const handleTestSound = async () => {
+    setIsTestingSound(true);
+    try {
+      await fetch('/api/test-sound', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ speaker_device: selectedSpeaker })
+      });
+    } catch (e) {
+      console.error('Failed to test sound:', e);
+    } finally {
+      setTimeout(() => setIsTestingSound(false), 800);
+    }
+  };
+
+  // Web Audio API mic level measurement for real-time visualization in Settings
+  React.useEffect(() => {
+    if (activeTab !== 'audio' || !showSettings) {
+      setInputLevel(0);
+      return;
+    }
+    
+    let audioContext: AudioContext | null = null;
+    let analyser: AnalyserNode | null = null;
+    let microphone: MediaStreamAudioSourceNode | null = null;
+    let javascriptNode: ScriptProcessorNode | null = null;
+    let stream: MediaStream | null = null;
+    
+    // Find the browser device ID that matches the selected backend mic name
+    const getConstraints = async () => {
+      const constraints: MediaStreamConstraints = { video: false };
+      
+      try {
+        // We first need temporary mic permission to fetch labels in enumerateDevices
+        const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        tempStream.getTracks().forEach(t => t.stop());
+        
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const audioInputs = devices.filter(d => d.kind === 'audioinput');
+        
+        // Find matching backend mic in mics list
+        const currentMicObj = mics.find(m => m.id === selectedMic);
+        const micName = currentMicObj ? currentMicObj.name : '';
+        
+        if (micName) {
+          const match = audioInputs.find(d => 
+            d.label.toLowerCase().includes(micName.toLowerCase()) || 
+            micName.toLowerCase().includes(d.label.toLowerCase())
+          );
+          if (match) {
+            constraints.audio = { deviceId: { exact: match.deviceId } };
+            return constraints;
+          }
+        }
+      } catch (e) {
+        console.warn('Enumerate devices failed or permission denied:', e);
+      }
+      
+      constraints.audio = true; // Fallback to default
+      return constraints;
+    };
+    
+    getConstraints().then((constraints) => {
+      navigator.mediaDevices.getUserMedia(constraints)
+        .then((s) => {
+          stream = s;
+          audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+          analyser = audioContext.createAnalyser();
+          microphone = audioContext.createMediaStreamSource(s);
+          javascriptNode = audioContext.createScriptProcessor(2048, 1, 1);
+          
+          analyser.smoothingTimeConstant = 0.8;
+          analyser.fftSize = 1024;
+          
+          microphone.connect(analyser);
+          analyser.connect(javascriptNode);
+          javascriptNode.connect(audioContext.destination);
+          
+          javascriptNode.onaudioprocess = () => {
+            if (!analyser) return;
+            const array = new Uint8Array(analyser.frequencyBinCount);
+            analyser.getByteFrequencyData(array);
+            let values = 0;
+            const length = array.length;
+            for (let i = 0; i < length; i++) {
+              values += array[i];
+            }
+            const average = values / length;
+            setInputLevel(Math.min(1.0, average / 48.0)); // normalize & cap
+          };
+        })
+        .catch((err) => {
+          console.error('Failed to get mic stream for visualization:', err);
+        });
+    });
+      
+    return () => {
+      if (javascriptNode) javascriptNode.disconnect();
+      if (microphone) microphone.disconnect();
+      if (analyser) analyser.disconnect();
+      if (audioContext) audioContext.close();
+      if (stream) stream.getTracks().forEach(track => track.stop());
+    };
+  }, [activeTab, showSettings, selectedMic, mics]);
+
   React.useEffect(() => {
     if (!showSettings) return;
 
     fetchModels();
     fetchBackendStatus();
+    fetchAudioDevices();
+    fetchAudioConfig();
 
     const interval = setInterval(() => {
       fetchBackendStatus();
@@ -282,24 +446,6 @@ export const SettingsModal: React.FC = () => {
               <Volume2 size={16} />
               <span>Audio</span>
             </button>
-
-            <button 
-              className={`nav-item disabled ${activeTab === 'calendar' ? 'active' : ''}`}
-              onClick={() => {}}
-              title="Calendar settings (coming soon)"
-            >
-              <Calendar size={16} />
-              <span>Calendar</span>
-            </button>
-
-            <button 
-              className={`nav-item disabled ${activeTab === 'about' ? 'active' : ''}`}
-              onClick={() => {}}
-              title="About Nexus (coming soon)"
-            >
-              <Info size={16} />
-              <span>About</span>
-            </button>
           </nav>
 
           <div className="sidebar-footer">
@@ -404,7 +550,9 @@ export const SettingsModal: React.FC = () => {
 
           {activeTab === 'audio' && (
             <div className="settings-pane">
-              <div className="settings-subheading">
+
+              {/* STT Engine Configuration Section */}
+              <div className="settings-subheading" style={{ marginTop: '0.5rem' }}>
                 <h2>Audio settings</h2>
                 <p>Configure speech-to-text models and hardware acceleration</p>
               </div>
@@ -457,11 +605,11 @@ export const SettingsModal: React.FC = () => {
               </div>
 
               {/* Model Manager Section */}
-              <div className="model-manager-section">
+              <div className="model-manager-section" style={{ marginBottom: '2.5rem' }}>
                 <div className="manager-header-row">
                   <h3 className="section-title">Model Manager</h3>
                   <div className="recommendation-badge-pill">
-                    <span>Recommended for your PC: <strong>{recommendedModelName}</strong></span>
+                    <span>Recommended: <strong>{recommendedModelName}</strong></span>
                   </div>
                 </div>
 
@@ -519,6 +667,87 @@ export const SettingsModal: React.FC = () => {
                       </div>
                     </div>
                   ))}
+                </div>
+              </div>
+
+              {/* Audio Configuration Section */}
+              <div className="settings-subheading" style={{ marginTop: '0.5rem', marginBottom: '1rem' }}>
+                <h2>Audio Configuration</h2>
+                <p>Manage input and output devices.</p>
+              </div>
+
+              <div className="settings-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1.25rem', marginBottom: '2rem' }}>
+                {/* Input Device select */}
+                <div className="setting-select-card">
+                  <div className="card-header-row">
+                    <Mic size={16} />
+                    <span>INPUT DEVICE</span>
+                  </div>
+                  <div className="select-container">
+                    <select 
+                      value={selectedMic} 
+                      onChange={(e) => handleDeviceChange('mic', e.target.value)}
+                      className="model-select-dropdown"
+                    >
+                      <option value="">Default Microphone</option>
+                      {mics.map(m => (
+                        <option key={m.id} value={m.id}>{m.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  
+                  {/* Real-time input level meter */}
+                  <div className="input-level-meter-container" style={{ marginTop: '0.5rem' }}>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'block', marginBottom: '0.35rem' }}>Input Level</span>
+                    <div style={{ 
+                      width: '100%', 
+                      height: '6px', 
+                      background: '#1f2029', 
+                      borderRadius: '3px',
+                      overflow: 'hidden'
+                    }}>
+                      <div style={{ 
+                        width: `${inputLevel * 100}%`, 
+                        height: '100%', 
+                        background: 'linear-gradient(to right, #10b981, #34d399)',
+                        transition: 'width 0.1s ease',
+                        borderRadius: '3px'
+                      }} />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Output Device select */}
+                <div className="setting-select-card">
+                  <div className="card-header-row">
+                    <Volume2 size={16} />
+                    <span>OUTPUT DEVICE</span>
+                  </div>
+                  <div className="select-container">
+                    <select 
+                      value={selectedSpeaker} 
+                      onChange={(e) => handleDeviceChange('speaker', e.target.value)}
+                      className="model-select-dropdown"
+                    >
+                      <option value="">Default Speakers</option>
+                      {speakers.map(s => (
+                        <option key={s.id} value={s.id}>{s.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  
+                  {/* Test sound button aligned right */}
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.5rem' }}>
+                    <button 
+                      className="btn-secondary" 
+                      onClick={handleTestSound}
+                      disabled={isTestingSound}
+                      style={{ fontSize: '0.8rem', padding: '0.4rem 0.8rem', display: 'flex', alignItems: 'center', gap: '6px' }}
+                    >
+                      <Volume2 size={12} />
+                      <span>{isTestingSound ? 'Playing...' : 'Test Sound'}</span>
+                    </button>
+                  </div>
                 </div>
               </div>
 

@@ -14,11 +14,13 @@ so this file needs no per-OS branches. macOS does not support loopback without
 a virtual audio driver (e.g. BlackHole) - see README.
 """
 
+import time
 import queue
 import threading
 
 import numpy as np
 import soundcard as sc
+
 
 
 class AudioCapture:
@@ -52,7 +54,7 @@ class AudioCapture:
             while not self._stop.is_set():
                 data = rec.record(numframes=self.chunk_samples)  # shape (n, channels)
                 mono = data.mean(axis=1) if data.ndim > 1 else data
-                self.out_queue.put(mono.astype(np.float32))
+                self.out_queue.put((time.perf_counter(), mono.astype(np.float32)))
 
 
 class MicCapture(AudioCapture):

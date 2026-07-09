@@ -17,6 +17,7 @@ function AppContent() {
   const [backendOnline, setBackendOnline] = useState(false);
   const { settings } = useSettings();
   const [searchQuery, setSearchQuery] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
 
   // Initialize and check status
   const checkStatus = async () => {
@@ -112,6 +113,7 @@ function AppContent() {
   };
 
   const handleStopRecording = async () => {
+    setIsSaving(true);
     try {
       const res = await fetch('/api/stop', { 
         method: 'POST',
@@ -121,8 +123,12 @@ function AppContent() {
       if (res.ok) {
         const data = await res.json();
         if (data.status === 'stopped') {
-          setView('dashboard');
-          fetchHistory();
+          fetchHistory(); // Refresh history list in background
+          if (data.meeting_id && !settings.doNotSaveMeetings) {
+            await handleSelectMeeting(data.meeting_id);
+          } else {
+            setView('dashboard');
+          }
         }
       } else {
         alert('Could not stop recording session.');
@@ -130,6 +136,8 @@ function AppContent() {
     } catch (e) {
       console.error('Error stopping recording:', e);
       alert('Error stopping recording.');
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -177,7 +185,10 @@ function AppContent() {
 
       {view === 'dashboard' && (
         <Dashboard
-          meetings={meetings.filter(m => m.title.toLowerCase().includes(searchQuery.toLowerCase()))}
+          meetings={meetings.filter(m => 
+            m.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+            (m.full_text && m.full_text.toLowerCase().includes(searchQuery.toLowerCase()))
+          )}
           onSelectMeeting={handleSelectMeeting}
           onStartRecording={handleStartRecording}
           onRefresh={handleRefresh}
@@ -191,6 +202,7 @@ function AppContent() {
           onBack={() => { setSelectedMeeting(null); setView('dashboard'); }}
           onRename={handleRenameMeeting}
           onDelete={handleDeleteMeeting}
+          searchQuery={searchQuery}
         />
       )}
 
@@ -201,6 +213,43 @@ function AppContent() {
       )}
 
       <SettingsModal />
+
+      {isSaving && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100vw',
+          height: '100vh',
+          background: 'rgba(10, 10, 12, 0.85)',
+          backdropFilter: 'blur(10px)',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999,
+          color: '#ffffff',
+          fontFamily: 'Inter, sans-serif'
+        }}>
+          <div style={{
+            width: '40px',
+            height: '40px',
+            border: '3px solid rgba(255, 255, 255, 0.1)',
+            borderTop: '3px solid #6366f1',
+            borderRadius: '50%',
+            animation: 'spin 1s linear infinite',
+            marginBottom: '1.2rem'
+          }} />
+          <style>{`
+            @keyframes spin {
+              0% { transform: rotate(0deg); }
+              100% { transform: rotate(360deg); }
+            }
+          `}</style>
+          <h2 style={{ fontSize: '1.25rem', fontWeight: 600, margin: 0, marginBottom: '0.4rem' }}>Reprocessing Transcript</h2>
+          <p style={{ fontSize: '0.9rem', color: '#9ca3af', margin: 0 }}>Aligning diarization & running high-accuracy STT refinement...</p>
+        </div>
+      )}
     </div>
   );
 }

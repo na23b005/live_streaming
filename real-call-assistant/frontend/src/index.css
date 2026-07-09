@@ -347,7 +347,9 @@ input:checked+.toggle-slider:before {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--text-muted);
-  margin-top: 1rem;
+  margin-top: 1.5rem;
+  margin-bottom: 0.75rem;
+  padding-left: 1.5rem;
 }
 
 .history-list {
@@ -1976,9 +1978,10 @@ body.live-transcribe-active .app-container {
   background: rgba(255, 255, 255, 0.08);
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 20px;
-  padding: 5px 12px;
-  font-size: 0.8rem;
+  padding: 4px 10px;
+  font-size: 0.7rem;
   color: var(--text-secondary);
+  white-space: nowrap;
 }
 
 .recommendation-badge-pill strong {
@@ -2119,4 +2122,84 @@ body.live-transcribe-active .app-container {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* Custom Select Card for Audio Devices and Accent/Region */
+.setting-select-card {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border-color);
+  border-radius: 0.85rem;
+  padding: 1.25rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  transition: border-color 0.2s ease;
+}
+
+.setting-select-card:hover {
+  border-color: var(--border-color-hover);
+}
+
+.setting-select-card .card-header-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.setting-select-card .select-container {
+  position: relative;
+  width: 100%;
+}
+
+.setting-select-card select.model-select-dropdown {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  padding: 0.75rem 1rem;
+  border-radius: 0.5rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+  outline: none;
+  cursor: pointer;
+  appearance: none;
+  transition: all 0.2s ease;
+}
+
+.setting-select-card select.model-select-dropdown:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--border-color-hover);
+}
+
+.setting-select-card select.model-select-dropdown:focus {
+  border-color: var(--accent-cyan);
+  box-shadow: 0 0 0 2px rgba(6, 182, 212, 0.15);
+}
+
+.setting-select-card .select-container::after {
+  content: '▼';
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  position: absolute;
+  right: 1.25rem;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.setting-select-card .setting-caption {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  margin-top: 0.25rem;
+  line-height: 1.4;
+}
+
+.setting-select-card select.model-select-dropdown option {
+  background-color: #111115;
+  color: var(--text-primary);
 }

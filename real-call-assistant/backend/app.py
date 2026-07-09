@@ -6,6 +6,7 @@ import threading
 import uvicorn
 import json
 import datetime
+import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Body
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
@@ -16,10 +17,12 @@ from pydantic import BaseModel
 from config import Config
 from audio.capture import MicCapture, SystemAudioCapture
 from audio.vad_segmenter import VADSegmenter
+from audio.echo_cancellation import WebRTCAcousticEchoCanceller
 from pipeline.channel_worker import ChannelWorker, TranscriptEvent
 from pipeline.transcript_normalizer import format_line
 from stt.moonshine_dml_engine import MoonshineDirectMLEngine
 from stt.faster_whisper_engine import FasterWhisperEngine
+from stt.remote_engine import RemoteSTTEngine
 import webview
 import subprocess
 
@@ -210,8 +213,23 @@ MODELS_METADATA = [
         "size": "1.6 GB",
         "speed": "medium",
         "accuracy": "excellent acc"
+    },
+    {
+        "id": "remote/distil-large-v3",
+        "name": "Remote GPU (RTX 5090) - Distil Large v3",
+        "size": "731 MB",
+        "speed": "blazing-fast",
+        "accuracy": "excellent acc"
+    },
+    {
+        "id": "remote/large-v3-turbo",
+        "name": "Remote GPU (RTX 5090) - Whisper Large v3 Turbo",
+        "size": "1.6 GB",
+        "speed": "blazing-fast",
+        "accuracy": "excellent acc"
     }
 ]
+
 
 from pathlib import Path
 import shutil
@@ -219,6 +237,8 @@ import shutil
 downloading_models = set()
 
 def check_model_downloaded(model_id: str) -> bool:
+    if model_id.startswith("remote/"):
+        return True
     hf_cache_dir = Path(os.environ.get("HF_HUB_CACHE", "E:/Local transcribe/local-transcribe/models"))
     if model_id == "moonshine/tiny":
         moonshine_repo = hf_cache_dir / "models--UsefulSensors--moonshine"
@@ -269,6 +289,8 @@ def download_model_worker(model_id: str):
             downloading_models.remove(model_id)
 
 def delete_model_files(model_id: str):
+    if model_id.startswith("remote/"):
+        return
     hf_cache_dir = Path(os.environ.get("HF_HUB_CACHE", "E:/Local transcribe/local-transcribe/models"))
     if model_id.startswith("moonshine/"):
         for name in ["models--useful-sensors--moonshine", "models--UsefulSensors--moonshine"]:
@@ -286,7 +308,11 @@ def load_engines(model_size: str):
     global mic_engine, sys_engine, cfg
     
     # Determine the engine type and parameters
-    if model_size.startswith("moonshine/"):
+    if model_size.startswith("remote/"):
+        engine_type = "remote"
+        device = "remote"
+        compute_type = "remote"
+    elif model_size.startswith("moonshine/"):
         engine_type = "moonshine"
         device = "dml"  # default DirectML for Moonshine on Windows
         compute_type = "float"
@@ -297,7 +323,18 @@ def load_engines(model_size: str):
         
     print(f"Loading {engine_type} STT engines for model '{model_size}' (device={device})...")
     
-    if engine_type == "moonshine":
+    if engine_type == "remote":
+        # Extract the backend model size (e.g. distil-large-v3)
+        actual_model = model_size.replace("remote/", "")
+        new_mic_engine = RemoteSTTEngine(
+            model_size=actual_model,
+            remote_url=cfg.remote_url
+        )
+        new_sys_engine = RemoteSTTEngine(
+            model_size=actual_model,
+            remote_url=cfg.remote_url
+        )
+    elif engine_type == "moonshine":
         new_mic_engine = MoonshineDirectMLEngine(
             model_size,
             device,
@@ -355,6 +392,7 @@ def build_segmenter(cfg: Config) -> VADSegmenter:
         silence_hangover_ms=cfg.silence_hangover_ms,
         min_speech_ms=cfg.min_speech_ms,
         max_segment_s=cfg.max_segment_s,
+        rms_threshold=cfg.vad_rms_threshold,
     )
 
 @app.on_event("startup")
@@ -382,20 +420,38 @@ def start_recording():
     current_session_segments = []
     current_session_start_time = datetime.datetime.now()
             
+    # Initialize echo canceller if enabled
+    echo_canceller = None
+    if cfg.enable_aec:
+        echo_canceller = WebRTCAcousticEchoCanceller(
+            sample_rate=cfg.sample_rate,
+            delay_ms=cfg.aec_delay_ms,
+            enable_ns=cfg.aec_enable_ns,
+            enable_agc=cfg.aec_enable_agc,
+            ducking_threshold=cfg.aec_ducking_threshold,
+            ref_threshold=cfg.aec_ref_threshold
+        )
+
+    shared_state = {"last_sys_audio_active_time": 0.0}
+
     # Re-initialize workers
     mic_worker = ChannelWorker(
-        speaker_label="Me",
+        speaker_label="Speaker 1",
         capture=MicCapture(cfg.sample_rate, cfg.frame_ms, cfg.mic_device),
         segmenter=build_segmenter(cfg),
         engine=mic_engine,
         out_queue=out_queue,
+        echo_canceller=echo_canceller,
+        shared_state=shared_state,
     )
     sys_worker = ChannelWorker(
-        speaker_label="Speaker 1",
+        speaker_label="Speaker 2",
         capture=SystemAudioCapture(cfg.sample_rate, cfg.frame_ms, cfg.speaker_device),
         segmenter=build_segmenter(cfg),
         engine=sys_engine,
         out_queue=out_queue,
+        echo_canceller=echo_canceller,
+        shared_state=shared_state,
     )
     
     # Reset stats
@@ -413,6 +469,176 @@ def start_recording():
     recording_active = True
     print("Recording started.")
     return {"status": "started"}
+
+def reprocess_recording(mic_audio, sys_audio, cfg, mic_engine, sys_engine):
+    import webrtcvad
+    from pipeline.channel_worker import stt_lock
+    from pipeline.transcript_normalizer import clean_text
+    
+    # 1. Pre-calculate system loopback activity timestamps for room echo masking
+    sys_active_times = []
+    frame_samples = int(cfg.sample_rate * cfg.frame_ms / 1000)
+    t = 0.0
+    for idx in range(0, len(sys_audio), frame_samples):
+        chunk = sys_audio[idx : idx + frame_samples]
+        rms = np.sqrt(np.mean(chunk**2)) if len(chunk) > 0 else 0.0
+        if rms > 0.01:
+            sys_active_times.append(t)
+        t += cfg.frame_ms / 1000.0
+        
+    def get_speech_segments_sync(audio_array, is_mic=False):
+        if len(audio_array) == 0:
+            return []
+            
+        vad = webrtcvad.Vad(cfg.vad_aggressiveness)
+        # Use a larger silence hangover (800ms) for post-processing to group continuous speech
+        post_hangover_ms = 800
+        hangover_frames = max(1, post_hangover_ms // cfg.frame_ms)
+        min_speech_frames = max(1, cfg.min_speech_ms // cfg.frame_ms)
+        # Use a larger max segment limit (25.0s) to keep full sentence structures together
+        post_max_segment_s = 25.0
+        max_segment_frames = int(post_max_segment_s * 1000 / cfg.frame_ms)
+        
+        speech_frames = []
+        silence_run = 0
+        speech_start_ts = None
+        
+        segments = []
+        t_offset = 0.0
+        
+        for idx in range(0, len(audio_array), frame_samples):
+            chunk = audio_array[idx : idx + frame_samples]
+            if len(chunk) < frame_samples:
+                chunk = np.pad(chunk, (0, frame_samples - len(chunk)))
+                
+            rms = np.sqrt(np.mean(chunk**2)) if len(chunk) > 0 else 0.0
+            
+            clipped = np.clip(chunk, -1.0, 1.0)
+            pcm_bytes = (clipped * 32767).astype(np.int16).tobytes()
+            
+            is_speech = vad.is_speech(pcm_bytes, cfg.sample_rate)
+            
+            # Dynamic threshold masking for microphone channel to suppress room echo leakage
+            current_rms_threshold = 0.012 if is_mic else 0.008
+            if is_mic and sys_active_times:
+                # Check if system loopback was active in the last 1.0s
+                was_sys_active = any(t_offset - 1.0 <= st <= t_offset for st in sys_active_times)
+                if was_sys_active:
+                    current_rms_threshold = 0.035
+                    
+            if rms < current_rms_threshold:
+                is_speech = False
+                
+            if is_speech:
+                if not speech_frames:
+                    speech_start_ts = t_offset
+                speech_frames.append(chunk)
+                silence_run = 0
+            elif speech_frames:
+                speech_frames.append(chunk)
+                silence_run += 1
+                
+            hit_hangover = speech_frames and silence_run >= hangover_frames
+            hit_max_len = (len(speech_frames) >= max_segment_frames and not is_speech) or (len(speech_frames) >= int(max_segment_frames * 1.5))
+            
+            if speech_frames and (hit_hangover or hit_max_len):
+                if len(speech_frames) - silence_run >= min_speech_frames:
+                    audio = np.concatenate(speech_frames).astype(np.float32)
+                    segments.append({
+                        "audio": audio,
+                        "start_ts": speech_start_ts,
+                        "end_ts": t_offset
+                    })
+                speech_frames = []
+                silence_run = 0
+                speech_start_ts = None
+                
+            t_offset += cfg.frame_ms / 1000.0
+            
+        if speech_frames:
+            actual_speech_len = len(speech_frames) - silence_run
+            if actual_speech_len >= min_speech_frames:
+                audio = np.concatenate(speech_frames).astype(np.float32)
+                segments.append({
+                    "audio": audio,
+                    "start_ts": speech_start_ts,
+                    "end_ts": t_offset
+                })
+                
+        return segments
+
+    # Run VAD on both full channels
+    print("Post-processing: running VAD on full microphone channel...")
+    mic_segs = get_speech_segments_sync(mic_audio, is_mic=True)
+    print(f"Detected {len(mic_segs)} speech segments on microphone channel.")
+    
+    print("Post-processing: running VAD on full system loopback channel...")
+    sys_segs = get_speech_segments_sync(sys_audio, is_mic=False)
+    print(f"Detected {len(sys_segs)} speech segments on system loopback channel.")
+    
+    processed_segments = []
+    
+    # Transcribe Microphone segments (Speaker 1)
+    for seg in mic_segs:
+        try:
+            # Segment RMS check
+            rms = np.sqrt(np.mean(seg["audio"]**2)) if len(seg["audio"]) > 0 else 0.0
+            if rms < 0.012:
+                print(f"Post-processing: skipping quiet mic segment (RMS: {rms:.4f})")
+                continue
+
+            with stt_lock:
+                text = clean_text(mic_engine.transcribe(seg["audio"], cfg.sample_rate))
+            if text:
+                # Suspected Whisper hallucination check on low energy
+                cleaned_lower = text.lower().strip().replace("’", "'").translate(str.maketrans("", "", ".,?!"))
+                if cleaned_lower in ["thank you", "thank you so much", "i don't know", "you", "yeah", "yes", "oh", "bye"]:
+                    if rms < 0.025:
+                        print(f"Post-processing: skipping suspected Whisper hallucination '{text}' (RMS: {rms:.4f})")
+                        continue
+
+                processed_segments.append({
+                    "speaker": "Speaker 1",
+                    "start_ts": seg["start_ts"],
+                    "end_ts": seg["end_ts"],
+                    "text": text
+                })
+        except Exception as e:
+            print(f"Error transcribing post-processed mic segment at {seg['start_ts']:.1f}s: {e}")
+            
+    # Transcribe System loopback segments (Speaker 2)
+    for seg in sys_segs:
+        try:
+            with stt_lock:
+                text = clean_text(sys_engine.transcribe(seg["audio"], cfg.sample_rate))
+            if text:
+                processed_segments.append({
+                    "speaker": "Speaker 2",
+                    "start_ts": seg["start_ts"],
+                    "end_ts": seg["end_ts"],
+                    "text": text
+                })
+        except Exception as e:
+            print(f"Error transcribing post-processed sys segment at {seg['start_ts']:.1f}s: {e}")
+            
+    # Sort chronologically by start time
+    processed_segments.sort(key=lambda s: s["start_ts"])
+    
+    # Merge consecutive segments of the same speaker
+    final_segments = []
+    if processed_segments:
+        current_seg = processed_segments[0]
+        for s in processed_segments[1:]:
+            # If same speaker AND close in time (gap < 3.0s)
+            if s["speaker"] == current_seg["speaker"] and (s["start_ts"] - current_seg["end_ts"] < 3.0):
+                current_seg["text"] = current_seg["text"] + " " + s["text"]
+                current_seg["end_ts"] = s["end_ts"]
+            else:
+                final_segments.append(current_seg)
+                current_seg = s
+        final_segments.append(current_seg)
+        
+    return final_segments
 
 class StopRequest(BaseModel):
     do_not_save: bool = False
@@ -455,15 +681,43 @@ def stop_recording(request: StopRequest = None):
     if not do_not_save_flag and (current_session_segments or stats["duration"] > 0):
         now = datetime.datetime.now()
         meeting_id = f"meeting_{now.strftime('%Y%m%d_%H%M%S')}"
-        # Default meeting title matching design
         meeting_title = f"Meeting at {now.strftime('%I:%M %p')}"
         
+        # 1. Combine audio histories and save as stereo WAV
+        import scipy.io.wavfile as wav
+        mic_audio = np.concatenate(mic_worker.audio_history) if (mic_worker and mic_worker.audio_history) else np.empty(0, dtype=np.float32)
+        sys_audio = np.concatenate(sys_worker.audio_history) if (sys_worker and sys_worker.audio_history) else np.empty(0, dtype=np.float32)
+        
+        max_len = max(len(mic_audio), len(sys_audio))
+        if max_len > 0:
+            if len(mic_audio) < max_len:
+                mic_audio = np.pad(mic_audio, (0, max_len - len(mic_audio)))
+            if len(sys_audio) < max_len:
+                sys_audio = np.pad(sys_audio, (0, max_len - len(sys_audio)))
+                
+            stereo_audio = np.column_stack((mic_audio, sys_audio))
+            wav_path = os.path.join(cfg.history_dir, f"{meeting_id}.wav")
+            try:
+                wav.write(wav_path, cfg.sample_rate, (np.clip(stereo_audio, -1.0, 1.0) * 32767).astype(np.int16))
+                print(f"Saved meeting audio to {wav_path}")
+            except Exception as e:
+                print(f"Failed to save WAV audio: {e}")
+
+        # 2. Reprocess the entire recorded audio (Full VAD & STT refinement)
+        reprocessed_segments = reprocess_recording(
+            mic_audio=mic_audio,
+            sys_audio=sys_audio,
+            cfg=cfg,
+            mic_engine=mic_engine,
+            sys_engine=sys_engine
+        )
+                        
         meeting_data = {
             "id": meeting_id,
             "title": meeting_title,
             "date": now.isoformat(),
             "duration": stats["duration"],
-            "segments": current_session_segments.copy(),
+            "segments": reprocessed_segments,
             "stats": stats
         }
         
@@ -511,24 +765,73 @@ def get_config():
         "model_size": cfg.model_size,
         "engine_type": cfg.engine_type,
         "device": cfg.device,
-        "compute_type": cfg.compute_type
+        "compute_type": cfg.compute_type,
+        "mic_device": cfg.mic_device,
+        "speaker_device": cfg.speaker_device
     }
 
 @app.post("/api/config")
 def update_config(data: dict = Body(...)):
-    global recording_active, is_loading_engine
+    global recording_active, is_loading_engine, cfg
     if recording_active:
         raise HTTPException(status_code=400, detail="Cannot change configuration while recording is active.")
-    if is_loading_engine:
-        raise HTTPException(status_code=400, detail="Model is already loading in the background.")
+        
+    # Check if we are updating mic/speaker devices
+    if "mic_device" in data:
+        cfg.mic_device = data.get("mic_device")
+    if "speaker_device" in data:
+        cfg.speaker_device = data.get("speaker_device")
         
     model_size = data.get("model_size")
-    if not model_size:
-        raise HTTPException(status_code=400, detail="model_size is required.")
+    if model_size:
+        if is_loading_engine:
+            raise HTTPException(status_code=400, detail="Model is already loading in the background.")
+        # Start the background engine loading thread
+        threading.Thread(target=bg_load_engines, args=(model_size,), daemon=True).start()
+        return {"status": "loading"}
         
-    # Start the background engine loading thread
-    threading.Thread(target=bg_load_engines, args=(model_size,), daemon=True).start()
-    return {"status": "loading"}
+    return {"status": "success"}
+
+@app.get("/api/audio-devices")
+def get_audio_devices():
+    import soundcard as sc
+    try:
+        # soundcard fetches list of microphone and speaker devices
+        mics = [{"id": m.id, "name": m.name} for m in sc.all_microphones()]
+        speakers = [{"id": s.id, "name": s.name} for s in sc.all_speakers()]
+        return {
+            "mics": mics,
+            "speakers": speakers
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch audio devices: {str(e)}")
+
+@app.post("/api/test-sound")
+def test_sound(data: dict = Body(...)):
+    import soundcard as sc
+    import numpy as np
+    
+    speaker_device = data.get("speaker_device")
+    try:
+        speaker = sc.get_speaker(speaker_device) if speaker_device else sc.default_speaker()
+        
+        # Generate a beautiful 440Hz sine wave chime (0.4s) fading out exponentially
+        sample_rate = 44100
+        duration = 0.4
+        t = np.linspace(0, duration, int(sample_rate * duration), False)
+        envelope = np.exp(-6 * t)
+        chime = np.sin(2 * np.pi * 440 * t) * envelope * 0.25
+        
+        # Stereo audio array
+        stereo_chime = np.column_stack((chime, chime))
+        
+        # Play via soundcard
+        with speaker.player(samplerate=sample_rate) as p:
+            p.play(stereo_chime)
+            
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to play test sound: {str(e)}")
 
 @app.get("/api/models")
 def get_models():
@@ -605,97 +908,55 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         active_sockets.remove(websocket)
 
-from difflib import SequenceMatcher
-import time
-
-def compute_similarity(text1: str, text2: str) -> float:
-    t1 = text1.lower().strip()
-    t2 = text2.lower().strip()
-    if not t1 or not t2:
-        return 0.0
-    if len(t1) >= 6 and t1 in t2:
-        return 1.0
-    if len(t2) >= 6 and t2 in t1:
-        return 1.0
-    return SequenceMatcher(None, t1, t2).ratio()
+def is_echo_duplicate(event_text, event_start, event_end, event_speaker, segments):
+    if event_speaker != "Speaker 1":
+        return False
+        
+    import string
+    def get_words(t):
+        return set(t.lower().translate(str.maketrans("", "", string.punctuation)).split())
+        
+    w_me = get_words(event_text)
+    if not w_me:
+        return False
+        
+    for s in segments[-15:]:
+        if s["speaker"] == "Speaker 2":
+            time_close = abs(event_start - s["start_ts"]) <= 4.0 or abs(event_end - s["end_ts"]) <= 4.0
+            if time_close:
+                w_sys = get_words(s["text"])
+                if not w_sys:
+                    continue
+                intersection = w_me.intersection(w_sys)
+                union = w_me.union(w_sys)
+                similarity = len(intersection) / len(union) if union else 0
+                if similarity >= 0.65:
+                    return True
+    return False
 
 # Background task to drain transcription queue, store them in memory, and broadcast to websockets
 async def queue_listener():
     global out_queue, active_sockets, current_session_segments
     
-    pending_events = []      # list of dicts: {"event": event, "added_at": float}
-    broadcasted_history = []  # list of dicts: {"speaker": str, "start_ts": float, "text": str, "time": float}
-    
     while True:
         try:
-            # 1. Drain new events from out_queue into pending_events
+            # Drain new events from out_queue and process/broadcast immediately
             while not out_queue.empty():
                 try:
                     event = out_queue.get_nowait()
-                    pending_events.append({
-                        "event": event,
-                        "added_at": time.time()
-                    })
                 except queue.Empty:
                     break
-                    
-            # 2. Process pending events that have been in the buffer for >= 1.5 seconds
-            now = time.time()
-            events_to_process = [x for x in pending_events if now - x["added_at"] >= 1.5]
-            
-            for p_item in events_to_process:
-                pending_events.remove(p_item)
-                event = p_item["event"]
                 
                 speaker = event.speaker
                 text = event.text
                 start_ts = event.start_ts
                 end_ts = event.end_ts
                 
-                is_echo = False
-                match_score = 0.0
-                
-                # Check if this is mic audio ("Me") and matches any system audio ("Speaker 1")
-                if speaker == "Me":
-                    # Find matching Speaker 1 events in either pending_events or recently broadcasted_history
-                    system_events = []
-                    
-                    # Check pending
-                    for other in pending_events:
-                        if other["event"].speaker == "Speaker 1":
-                            system_events.append(other["event"])
-                    # Check broadcasted history (within last 20 seconds)
-                    for hist in broadcasted_history:
-                        if hist["speaker"] == "Speaker 1" and now - hist["time"] <= 20.0:
-                            system_events.append(hist)
-                            
-                    for sys_ev in system_events:
-                        # Time proximity check (start times within 4.5 seconds of each other)
-                        if isinstance(sys_ev, dict):
-                            sys_start = sys_ev["start_ts"]
-                            sys_text = sys_ev["text"]
-                        else:
-                            sys_start = sys_ev.start_ts
-                            sys_text = sys_ev.text
-                            
-                        if abs(start_ts - sys_start) <= 4.5:
-                            score = compute_similarity(text, sys_text)
-                            if score > match_score:
-                                match_score = score
-                                
-                    if match_score >= 0.70:
-                        is_echo = True
-                        
-                if is_echo:
-                    if match_score >= 0.85:
-                        # Drop very close duplicates completely to prevent UI clutter
-                        print(f"[Acoustic Echo Cancellation] Dropped duplicate mic segment (score={match_score:.2f}): '{text}'")
-                        continue
-                    else:
-                        # Flag partial echo segments in the text
-                        text = f"[Echo] {text}"
-                        print(f"[Acoustic Echo Cancellation] Flagged echo mic segment (score={match_score:.2f}): '{text}'")
-                
+                # Check for post-transcription semantic deduplication safety net
+                if is_echo_duplicate(text, start_ts, end_ts, speaker, current_session_segments):
+                    print(f"[AEC Safety Net] Suppressed duplicate mic transcript event: '{text}'")
+                    continue
+
                 # Prepare segment for broadcast
                 segment_data = {
                     "speaker": speaker,
@@ -707,14 +968,6 @@ async def queue_listener():
                 # Keep in active session segment store
                 current_session_segments.append(segment_data)
                 
-                # Record in history for future echo matching
-                broadcasted_history.append({
-                    "speaker": speaker,
-                    "start_ts": start_ts,
-                    "text": text,
-                    "time": now
-                })
-                
                 # Broadcast to all websocket clients
                 for ws in list(active_sockets):
                     try:
@@ -723,8 +976,6 @@ async def queue_listener():
                         if ws in active_sockets:
                             active_sockets.remove(ws)
                             
-            # 3. Prune old broadcasted_history to keep memory low (keep only last 60 seconds)
-            broadcasted_history = [x for x in broadcasted_history if now - x["time"] <= 60.0]
         except Exception as e:
             print(f"Error in queue_listener background loop: {e}")
             import traceback
@@ -732,9 +983,35 @@ async def queue_listener():
             
         await asyncio.sleep(0.05)
 
+
+def print_audio_devices():
+    try:
+        import soundcard as sc
+        print("\n" + "="*45)
+        print("           DETECTED AUDIO DEVICES            ")
+        print("="*45)
+        print("Microphones (Capture Devices):")
+        for idx, m in enumerate(sc.all_microphones()):
+            print(f"  - {m.name}")
+        print("\nSpeakers (Playback Devices):")
+        for idx, s in enumerate(sc.all_speakers()):
+            print(f"  - {s.name}")
+        try:
+            print(f"\n[Default Microphone] {sc.default_microphone().name}")
+        except Exception:
+            print("\n[Default Microphone] NONE")
+        try:
+            print(f"[Default Speaker]    {sc.default_speaker().name}")
+        except Exception:
+            print("[Default Speaker]    NONE")
+        print("="*45 + "\n")
+    except Exception as e:
+        print(f"Failed to query audio devices: {e}")
+
 # Start queue listener background loop when app starts
 @app.on_event("startup")
 def start_listener():
+    print_audio_devices()
     loop = asyncio.get_event_loop()
     loop.create_task(queue_listener())
 
@@ -756,7 +1033,8 @@ def get_history():
                         "title": data.get("title"),
                         "date": data.get("date"),
                         "duration": data.get("duration"),
-                        "num_segments": len(data.get("segments", []))
+                        "num_segments": len(data.get("segments", [])),
+                        "full_text": " ".join([seg.get("text", "") for seg in data.get("segments", [])])
                     })
             except Exception as e:
                 print(f"Error reading history file {filename}: {e}")
@@ -794,13 +1072,25 @@ def rename_meeting(meeting_id: str, request: RenameRequest):
 @app.delete("/api/history/{meeting_id}")
 def delete_meeting(meeting_id: str):
     file_path = os.path.join(cfg.history_dir, f"{meeting_id}.json")
+    wav_path = os.path.join(cfg.history_dir, f"{meeting_id}.wav")
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Meeting not found")
     try:
         os.remove(file_path)
+        if os.path.exists(wav_path):
+            os.remove(wav_path)
         return {"status": "deleted"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete meeting: {str(e)}")
+
+from fastapi.responses import FileResponse
+
+@app.get("/api/history/{meeting_id}/audio")
+def get_meeting_audio(meeting_id: str):
+    file_path = os.path.join(cfg.history_dir, f"{meeting_id}.wav")
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Audio file not found")
+    return FileResponse(file_path, media_type="audio/wav")
 
 # Mount static/compiled frontend files
 frontend_dist = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend", "dist"))

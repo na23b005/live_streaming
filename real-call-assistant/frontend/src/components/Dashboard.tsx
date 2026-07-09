@@ -117,7 +117,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
             {/* Yesterday Group */}
             {grouped.yesterday.length > 0 && (
-              <div style={{ marginTop: '1.5rem' }}>
+              <div>
                 <h3 className="history-group-title">Yesterday</h3>
                 <div className="history-list">
                   {grouped.yesterday.map((meeting) => (
@@ -141,7 +141,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
             {/* Older Group */}
             {grouped.older.length > 0 && (
-              <div style={{ marginTop: '1.5rem' }}>
+              <div>
                 <h3 className="history-group-title">Older</h3>
                 <div className="history-list">
                   {grouped.older.map((meeting) => (
