@@ -30,6 +30,10 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       try {
         const parsed = JSON.parse(saved);
         delete parsed.theme;
+        // Sanitize legacy remote GPU model selection
+        if (parsed.sttModel && parsed.sttModel.startsWith('remote/')) {
+          parsed.sttModel = 'moonshine/base';
+        }
         return { ...DEFAULT_SETTINGS, ...parsed };
       } catch {
         return DEFAULT_SETTINGS;

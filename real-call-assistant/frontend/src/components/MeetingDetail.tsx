@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { ArrowLeft, Copy, Download, Trash2, Edit2, Check, X, HelpCircle } from 'lucide-react';
 import type { Meeting } from '../types';
+import { API_BASE } from '../types';
 
 interface MeetingDetailProps {
   meeting: Meeting;
@@ -181,7 +182,7 @@ export const MeetingDetail: React.FC<MeetingDetailProps> = ({
       }}>
         <div style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-muted)' }}>Meeting Audio Playback</div>
         <audio 
-          src={`/api/history/${meeting.id}/audio`} 
+          src={`${API_BASE}/api/history/${meeting.id}/audio`} 
           controls 
           style={{ width: '100%', outline: 'none' }}
         />

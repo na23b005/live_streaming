@@ -70,6 +70,7 @@ html, body, #root, .settings-content, .history-list {
   border-radius: 16px;
   overflow: hidden;
   border: 1px solid var(--border-color);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
 }
 
 /* Main Dashboard UI */
@@ -2202,4 +2203,29 @@ body.live-transcribe-active .app-container {
 .setting-select-card select.model-select-dropdown option {
   background-color: #111115;
   color: var(--text-primary);
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.loading-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes pulse-button {
+  0% { opacity: 0.4; }
+  50% { opacity: 1.0; }
+  100% { opacity: 0.4; }
+}
+
+.btn-pulse-loading {
+  animation: pulse-button 1.5s ease-in-out infinite !important;
 }

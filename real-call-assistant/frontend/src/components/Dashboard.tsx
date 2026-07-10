@@ -9,6 +9,7 @@ interface DashboardProps {
   onStartRecording: () => void;
   onRefresh: () => void;
   backendOnline: boolean;
+  backendLoading: boolean;
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({
@@ -16,7 +17,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
   onSelectMeeting,
   onStartRecording,
   onRefresh,
-  backendOnline
+  backendOnline,
+  backendLoading
 }) => {
 
 
@@ -69,13 +71,27 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
         <div className="controls-right">
           <button 
-            className="btn-start-natively" 
+            className={`btn-start-natively ${(!backendOnline || backendLoading) ? 'btn-pulse-loading' : ''}`}
             onClick={onStartRecording}
-            disabled={!backendOnline}
-            style={{ opacity: backendOnline ? 1 : 0.6 }}
+            disabled={!backendOnline || backendLoading}
+            style={{ 
+              cursor: (backendOnline && !backendLoading) ? 'pointer' : 'not-allowed',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px'
+            }}
           >
-            <Play size={16} fill="white" />
-            Start Nexus
+            {backendLoading ? (
+              <>
+                <span className="loading-spinner"></span>
+                Loading Engine...
+              </>
+            ) : (
+              <>
+                <Play size={16} fill="white" />
+                Start Nexus AI
+              </>
+            )}
           </button>
         </div>
       </header>

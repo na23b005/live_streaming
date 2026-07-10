@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { Square, Mic, ChevronUp } from 'lucide-react';
+import { WS_BASE } from '../types';
 import type { Segment } from '../types';
 import { useSettings } from './SettingsContext';
 
@@ -12,8 +13,9 @@ export const LiveTranscribeOverlay: React.FC<LiveTranscribeOverlayProps> = ({
 }) => {
   const { settings } = useSettings();
   const [isMinimized, setIsMinimized] = useState(false);
-  const [isRequesting, setIsRequesting] = useState(false);
   const [segments, setSegments] = useState<Segment[]>([]);
+  const [suggestionsText, setSuggestionsText] = useState('Ask suggestions');
+  const [followUpText, setFollowUpText] = useState('Follow up questions');
 
   const socketRef = useRef<WebSocket | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -46,7 +48,7 @@ export const LiveTranscribeOverlay: React.FC<LiveTranscribeOverlayProps> = ({
 
     return () => {
       // Restore to dashboard layout
-      adjustTauriWindow(1024, 768, true, false);
+      adjustTauriWindow(1024, 768, false, false);
 
       // Clean up transparent window class
       document.body.classList.remove('live-transcribe-active');
@@ -67,12 +69,8 @@ export const LiveTranscribeOverlay: React.FC<LiveTranscribeOverlayProps> = ({
 
   // Connect WebSocket
   useEffect(() => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host || '127.0.0.1:8000';
-    const wsUrl = `${protocol}//${host}/ws`;
-
-    console.log(`Connecting to WebSocket: ${wsUrl}`);
-    const socket = new WebSocket(wsUrl);
+    console.log(`Connecting to WebSocket: ${WS_BASE}`);
+    const socket = new WebSocket(WS_BASE);
     socketRef.current = socket;
 
     socket.onmessage = (event) => {
@@ -115,48 +113,18 @@ export const LiveTranscribeOverlay: React.FC<LiveTranscribeOverlayProps> = ({
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const handleAskSuggestions = async () => {
-    setIsRequesting(true);
-    console.log('Triggered Ask Suggestions endpoint (/api/suggestions)...');
-    try {
-      const response = await fetch('/api/suggestions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ segments })
-      });
-      if (response.ok) {
-        const data = await response.json();
-        console.log('Suggestions response data:', data);
-      } else {
-        console.warn(`Suggestions endpoint returned status ${response.status} (expected since it is dummy)`);
-      }
-    } catch (err) {
-      console.error('Error in suggestions fetch (dummy endpoint):', err);
-    } finally {
-      setIsRequesting(false);
-    }
+  const handleAskSuggestions = () => {
+    setSuggestionsText('Coming soon!');
+    setTimeout(() => {
+      setSuggestionsText('Ask suggestions');
+    }, 2000);
   };
 
-  const handleFollowUpQuestions = async () => {
-    setIsRequesting(true);
-    console.log('Triggered Follow Up Questions endpoint (/api/follow-up)...');
-    try {
-      const response = await fetch('/api/follow-up', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ segments })
-      });
-      if (response.ok) {
-        const data = await response.json();
-        console.log('Follow-up questions response data:', data);
-      } else {
-        console.warn(`Follow-up endpoint returned status ${response.status} (expected since it is dummy)`);
-      }
-    } catch (err) {
-      console.error('Error in follow-up fetch (dummy endpoint):', err);
-    } finally {
-      setIsRequesting(false);
-    }
+  const handleFollowUpQuestions = () => {
+    setFollowUpText('Coming soon!');
+    setTimeout(() => {
+      setFollowUpText('Follow up questions');
+    }, 2000);
   };
 
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -264,7 +232,6 @@ export const LiveTranscribeOverlay: React.FC<LiveTranscribeOverlayProps> = ({
                 </div>
               ) : (
                 segments.map((segment, index) => {
-                  const isMe = segment.speaker === 'Speaker 1';
                   return (
                     <div key={index} className="transcript-card">
                       <div className="transcript-card-header">
@@ -284,16 +251,16 @@ export const LiveTranscribeOverlay: React.FC<LiveTranscribeOverlayProps> = ({
             <button
               className="btn-nexus-footer-action"
               onClick={handleAskSuggestions}
-              disabled={isRequesting}
+              title="Coming Soon"
             >
-              <span>{isRequesting ? 'Loading...' : 'Ask suggestions'}</span>
+              <span>{suggestionsText}</span>
             </button>
             <button
               className="btn-nexus-footer-action"
               onClick={handleFollowUpQuestions}
-              disabled={isRequesting}
+              title="Coming Soon"
             >
-              <span>{isRequesting ? 'Loading...' : 'Follow up questions'}</span>
+              <span>{followUpText}</span>
             </button>
           </div>
         </>

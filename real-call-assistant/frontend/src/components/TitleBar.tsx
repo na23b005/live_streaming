@@ -48,7 +48,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({ searchQuery, onSearchChange 
             <path d="M4 4v16M20 4v16M4 4l16 16" />
           </svg>
         </div>
-        <span className="titlebar-logo-text">Nexus</span>
+        <span className="titlebar-logo-text">Nexus AI</span>
       </div>
 
       {/* Centered Search Bar */}

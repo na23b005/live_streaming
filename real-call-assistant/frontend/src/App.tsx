@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Dashboard } from './components/Dashboard';
 import { MeetingDetail } from './components/MeetingDetail';
 import { LiveTranscribeOverlay } from './components/LiveTranscribeOverlay';
+import { API_BASE } from './types';
 import type { Meeting } from './types';
 
 import { SettingsProvider, useSettings } from './components/SettingsContext';
@@ -15,6 +16,7 @@ function AppContent() {
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [selectedMeeting, setSelectedMeeting] = useState<Meeting | null>(null);
   const [backendOnline, setBackendOnline] = useState(false);
+  const [backendLoading, setBackendLoading] = useState(false);
   const { settings } = useSettings();
   const [searchQuery, setSearchQuery] = useState('');
   const [isSaving, setIsSaving] = useState(false);
@@ -22,14 +24,11 @@ function AppContent() {
   // Initialize and check status
   const checkStatus = async () => {
     try {
-      const res = await fetch('/api/status');
+      const res = await fetch(`${API_BASE}/api/status`);
       if (res.ok) {
+        setBackendOnline(true);
         const data = await res.json();
-        if (data.loading) {
-          setBackendOnline(false);
-        } else {
-          setBackendOnline(true);
-        }
+        setBackendLoading(!!data.loading);
         if (data.recording) {
           setView('live-transcribing');
         }
@@ -37,7 +36,7 @@ function AppContent() {
         // Auto-sync model settings on startup
         if (settings.sttModel && data.model !== settings.sttModel && !data.recording && !data.loading && !data.error) {
           try {
-            await fetch('/api/config', {
+            await fetch(`${API_BASE}/api/config`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ model_size: settings.sttModel })
@@ -48,15 +47,17 @@ function AppContent() {
         }
       } else {
         setBackendOnline(false);
+        setBackendLoading(false);
       }
     } catch (e) {
       setBackendOnline(false);
+      setBackendLoading(false);
     }
   };
 
   const fetchHistory = async () => {
     try {
-      const res = await fetch('/api/history');
+      const res = await fetch(`${API_BASE}/api/history`);
       if (res.ok) {
         const data = await res.json();
         setMeetings(data);
@@ -81,7 +82,7 @@ function AppContent() {
 
   const handleSelectMeeting = async (id: string) => {
     try {
-      const res = await fetch(`/api/history/${id}`);
+      const res = await fetch(`${API_BASE}/api/history/${id}`);
       if (res.ok) {
         const data = await res.json();
         setSelectedMeeting(data);
@@ -97,14 +98,15 @@ function AppContent() {
 
   const handleStartRecording = async () => {
     try {
-      const res = await fetch('/api/start', { method: 'POST' });
+      const res = await fetch(`${API_BASE}/api/start`, { method: 'POST' });
       if (res.ok) {
         const data = await res.json();
         if (data.status === 'started' || data.status === 'already_recording') {
           setView('live-transcribing');
         }
       } else {
-        alert('Could not start recording session.');
+        const errData = await res.json().catch(() => ({}));
+        alert(errData.detail || 'Could not start recording session.');
       }
     } catch (e) {
       console.error('Error starting recording:', e);
@@ -115,7 +117,7 @@ function AppContent() {
   const handleStopRecording = async () => {
     setIsSaving(true);
     try {
-      const res = await fetch('/api/stop', { 
+      const res = await fetch(`${API_BASE}/api/stop`, { 
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ do_not_save: settings.doNotSaveMeetings })
@@ -143,7 +145,7 @@ function AppContent() {
 
   const handleRenameMeeting = async (id: string, newTitle: string) => {
     try {
-      const res = await fetch(`/api/history/${id}`, {
+      const res = await fetch(`${API_BASE}/api/history/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title: newTitle })
@@ -162,7 +164,7 @@ function AppContent() {
 
   const handleDeleteMeeting = async (id: string) => {
     try {
-      const res = await fetch(`/api/history/${id}`, { method: 'DELETE' });
+      const res = await fetch(`${API_BASE}/api/history/${id}`, { method: 'DELETE' });
       if (res.ok) {
         setSelectedMeeting(null);
         setView('dashboard');
@@ -193,6 +195,7 @@ function AppContent() {
           onStartRecording={handleStartRecording}
           onRefresh={handleRefresh}
           backendOnline={backendOnline}
+          backendLoading={backendLoading}
         />
       )}
 

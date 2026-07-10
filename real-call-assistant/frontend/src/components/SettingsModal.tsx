@@ -2,8 +2,6 @@ import React from 'react';
 import { 
   Monitor, 
   Volume2, 
-  Calendar, 
-  Info, 
   LogOut, 
   X, 
   Shield, 
@@ -18,10 +16,10 @@ import {
   Check,
   Zap,
   HardDrive,
-  Mic,
-  MapPin
+  Mic
 } from 'lucide-react';
 import { useSettings } from './SettingsContext';
+import { API_BASE } from '../types';
 
 interface STTModel {
   id: string;
@@ -50,12 +48,11 @@ export const SettingsModal: React.FC = () => {
   const [selectedMic, setSelectedMic] = React.useState('');
   const [selectedSpeaker, setSelectedSpeaker] = React.useState('');
   const [inputLevel, setInputLevel] = React.useState(0);
-  const [accent, setAccent] = React.useState('India');
   const [isTestingSound, setIsTestingSound] = React.useState(false);
 
   const fetchModels = async () => {
     try {
-      const res = await fetch('/api/models');
+      const res = await fetch(`${API_BASE}/api/models`);
       if (res.ok) {
         const data = await res.json();
         setModels(data);
@@ -71,7 +68,7 @@ export const SettingsModal: React.FC = () => {
 
   const fetchBackendStatus = async () => {
     try {
-      const res = await fetch('/api/status');
+      const res = await fetch(`${API_BASE}/api/status`);
       if (res.ok) {
         const data = await res.json();
         setIsRecording(data.recording);
@@ -85,7 +82,7 @@ export const SettingsModal: React.FC = () => {
 
   const fetchAudioDevices = async () => {
     try {
-      const res = await fetch('/api/audio-devices');
+      const res = await fetch(`${API_BASE}/api/audio-devices`);
       if (res.ok) {
         const data = await res.json();
         setMics(data.mics || []);
@@ -98,7 +95,7 @@ export const SettingsModal: React.FC = () => {
 
   const fetchAudioConfig = async () => {
     try {
-      const res = await fetch('/api/config');
+      const res = await fetch(`${API_BASE}/api/config`);
       if (res.ok) {
         const data = await res.json();
         setSelectedMic(data.mic_device || '');
@@ -112,7 +109,7 @@ export const SettingsModal: React.FC = () => {
   const handleDeviceChange = async (type: 'mic' | 'speaker', deviceId: string) => {
     try {
       const payload = type === 'mic' ? { mic_device: deviceId } : { speaker_device: deviceId };
-      const res = await fetch('/api/config', {
+      const res = await fetch(`${API_BASE}/api/config`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -132,7 +129,7 @@ export const SettingsModal: React.FC = () => {
   const handleTestSound = async () => {
     setIsTestingSound(true);
     try {
-      await fetch('/api/test-sound', {
+      await fetch(`${API_BASE}/api/test-sound`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ speaker_device: selectedSpeaker })
@@ -252,7 +249,7 @@ export const SettingsModal: React.FC = () => {
   const handleInstallModel = async (modelId: string) => {
     setModels(prev => prev.map(m => m.id === modelId ? { ...m, downloading: true } : m));
     try {
-      const res = await fetch('/api/models/download', {
+      const res = await fetch(`${API_BASE}/api/models/download`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model_id: modelId })
@@ -268,7 +265,7 @@ export const SettingsModal: React.FC = () => {
   const handleDeleteModel = async (modelId: string) => {
     if (!confirm('Are you sure you want to delete this model to free up space?')) return;
     try {
-      const res = await fetch('/api/models/delete', {
+      const res = await fetch(`${API_BASE}/api/models/delete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model_id: modelId })
@@ -287,7 +284,7 @@ export const SettingsModal: React.FC = () => {
     setIsModelLoading(true);
 
     try {
-      const res = await fetch('/api/config', {
+      const res = await fetch(`${API_BASE}/api/config`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -302,7 +299,7 @@ export const SettingsModal: React.FC = () => {
       } else {
         const checkStatus = async () => {
           try {
-            const statusRes = await fetch('/api/status');
+            const statusRes = await fetch(`${API_BASE}/api/status`);
             if (statusRes.ok) {
               const data = await statusRes.json();
               setIsModelLoading(data.loading);
@@ -578,7 +575,15 @@ export const SettingsModal: React.FC = () => {
 
               {/* Local Engine Configuration */}
               <div className="engine-config-card">
-                <h3 className="section-title">Local Engine Configuration</h3>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <h3 className="section-title">Local Engine Configuration</h3>
+                  {isModelLoading && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#6366f1', fontSize: '0.8rem', fontWeight: 500 }}>
+                      <div className="spinner-small" style={{ width: '12px', height: '12px', borderWidth: '2px' }} />
+                      <span>Loading Engine...</span>
+                    </div>
+                  )}
+                </div>
                 <p className="section-subtitle">
                   Select the AI models you want to use for Speech-to-Text inference.
                 </p>
