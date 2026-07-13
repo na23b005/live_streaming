@@ -5,6 +5,8 @@ export interface AppSettings {
   autoScroll: boolean;
   opacity: number;
   sttModel: string;
+  sttLanguage: string;
+  sttInitialPrompt: string;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -12,6 +14,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   autoScroll: true,
   opacity: 80,
   sttModel: 'moonshine/base',
+  sttLanguage: 'en',
+  sttInitialPrompt: 'Indian English accent, conversation, terminology.',
 };
 
 interface SettingsContextProps {

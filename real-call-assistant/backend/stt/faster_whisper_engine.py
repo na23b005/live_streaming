@@ -39,7 +39,7 @@ def resolve_device(requested: str) -> tuple[str, str]:
 
 
 class FasterWhisperEngine(STTEngine):
-    def __init__(self, model_size: str = "base.en", device: str = "auto", compute_type: str | None = None, download_root: str | None = None):
+    def __init__(self, model_size: str = "base.en", device: str = "auto", compute_type: str | None = None, download_root: str | None = None, language: str | None = None, initial_prompt: str | None = None):
         resolved_device, default_compute = resolve_device(device)
         self.model = WhisperModel(
             model_size,
@@ -48,6 +48,8 @@ class FasterWhisperEngine(STTEngine):
             download_root=download_root,
         )
         self.device = resolved_device
+        self.language = language
+        self.initial_prompt = initial_prompt
         self.total_transcribe_time = 0.0
         self.total_segments = 0
         self.total_audio_duration = 0.0
@@ -59,12 +61,22 @@ class FasterWhisperEngine(STTEngine):
         import time
         start_t = time.perf_counter()
         
-        segments, _info = self.model.transcribe(audio, beam_size=1, vad_filter=False)
+        lang = self.language if self.language else None
+        prompt = self.initial_prompt if self.initial_prompt else None
+        
+        segments, _info = self.model.transcribe(
+            audio,
+            beam_size=2,
+            language=lang,
+            initial_prompt=prompt,
+            vad_filter=True
+        )
         
         texts = []
         for seg in segments:
             # Skip segments with high probability of no speech or low confidence (hallucinations/typing clicks)
-            if seg.no_speech_prob > 0.65 or seg.avg_logprob < -1.0:
+            # Relaxed thresholds to prevent trailing accented words from being skipped
+            if seg.no_speech_prob > 0.85 or seg.avg_logprob < -1.5:
                 continue
             texts.append(seg.text.strip())
         text = " ".join(texts).strip()

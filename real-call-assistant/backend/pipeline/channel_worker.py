@@ -19,7 +19,7 @@ from audio.capture import AudioCapture
 from audio.vad_segmenter import SpeechSegment, VADSegmenter
 from stt.base import STTEngine
 
-from .transcript_normalizer import clean_text
+from .transcript_normalizer import clean_text, is_whisper_hallucination
 
 # Global lock to serialize GPU/CPU inference across channels,
 # preventing concurrent execution deadlocks in ONNX Runtime/DirectML.
@@ -145,13 +145,10 @@ class ChannelWorker:
             if not text:
                 continue
                 
-            # Filter common Whisper hallucinations on low energy for microphone channel
-            if self.speaker_label == "Speaker 1":
-                cleaned_lower = text.lower().strip().replace("’", "'").translate(str.maketrans("", "", ".,?!"))
-                if cleaned_lower in ["thank you", "thank you so much", "i don't know", "you", "yeah", "yes", "oh", "bye"]:
-                    if rms < 0.025:
-                        print(f"Skipping segment: suspected Whisper hallucination '{text}' on low energy (RMS: {rms:.4f})")
-                        continue
+            # Filter common Whisper hallucinations on low energy
+            if is_whisper_hallucination(text, rms):
+                print(f"Skipping segment: suspected Whisper hallucination '{text}' (RMS: {rms:.4f}, channel: {self.speaker_label})")
+                continue
                 
             # Compute latency metrics
             stt_duration = completed_at - start_t

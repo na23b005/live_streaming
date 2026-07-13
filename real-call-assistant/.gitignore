@@ -32,6 +32,7 @@ venv/
 .venv/
 env/
 ENV/
+.env
 
 # ==========================
 # Node / Frontend Build

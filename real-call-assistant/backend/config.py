@@ -56,19 +56,21 @@ class Config:
 
     # --- VAD / endpointing ---
     vad_aggressiveness: int = 2        # 0-3, higher = more aggressive at filtering non-speech
-    silence_hangover_ms: int = 300     # trailing silence required before a segment is closed
+    silence_hangover_ms: int = 500     # trailing silence required before a segment is closed
     min_speech_ms: int = 250           # ignore blips shorter than this (coughs, clicks)
-    max_segment_s: float = 5.0         # hard limit for segment duration, cut only at silent boundaries
+    max_segment_s: float = 4.0         # hard limit for segment duration, cut only at silent boundaries
     vad_rms_threshold: float = 0.008   # absolute RMS threshold below which frames are treated as silence
 
     # --- STT ---
+    # URL of the remote STT server (RTX 5090 machine via Tailscale)
+    remote_url: str = os.getenv("STT_REMOTE_URL", "")
+    
     engine_type: str = os.getenv("STT_ENGINE_TYPE", "moonshine")  # "faster-whisper" | "moonshine" | "remote"
     model_size: str = os.getenv("STT_MODEL_SIZE", "moonshine/base") # e.g. "remote/distil-large-v3"
     compute_type: str = "float"         # "float" for Moonshine, "int8" for Whisper, "remote" for Remote
     device: str = "dml"                # "dml" | "cpu" | "cuda" | "remote"
-    
-    # URL of the remote STT server (RTX 5090 machine via Tailscale)
-    remote_url: str = os.getenv("STT_REMOTE_URL", "http://100.64.0.1:8001/transcribe")
+    stt_language: str = os.getenv("STT_LANGUAGE", "en")
+    stt_initial_prompt: str = os.getenv("STT_INITIAL_PROMPT", "Indian English accent, conversation, terminology.")
     
     # Model download folder inside backend
     model_download_root: str = str(MODELS_DIR)

@@ -10,9 +10,11 @@ class RemoteSTTEngine(STTEngine):
     STTEngine that sends audio segments to a remote server (e.g., RTX 5090 via Tailscale)
     running our FastAPI-based faster-whisper server.
     """
-    def __init__(self, model_size: str = "distil-large-v3", remote_url: str = "http://127.0.0.1:8001/transcribe"):
+    def __init__(self, model_size: str = "distil-large-v3", remote_url: str = "http://127.0.0.1:8001/transcribe", language: str | None = None, initial_prompt: str | None = None):
         self.model_size = model_size
         self.remote_url = remote_url
+        self.language = language
+        self.initial_prompt = initial_prompt
         self.device = f"Remote GPU ({self.remote_url})"
         self.total_transcribe_time = 0.0
         self.total_segments = 0
@@ -46,7 +48,11 @@ class RemoteSTTEngine(STTEngine):
             response = self.session.post(
                 self.remote_url,
                 files={"file": ("audio.wav", wav_bytes, "audio/wav")},
-                data={"model_size": self.model_size},
+                data={
+                    "model_size": self.model_size,
+                    "language": self.language or "",
+                    "initial_prompt": self.initial_prompt or ""
+                },
                 timeout=90.0  # Increased to allow the remote GPU to download/load the model on first call
             )
             if response.status_code == 200:

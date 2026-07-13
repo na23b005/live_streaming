@@ -17,7 +17,7 @@ function AppContent() {
   const [selectedMeeting, setSelectedMeeting] = useState<Meeting | null>(null);
   const [backendOnline, setBackendOnline] = useState(false);
   const [backendLoading, setBackendLoading] = useState(false);
-  const { settings } = useSettings();
+  const { settings, updateSetting } = useSettings();
   const [searchQuery, setSearchQuery] = useState('');
   const [isSaving, setIsSaving] = useState(false);
 
@@ -33,14 +33,28 @@ function AppContent() {
           setView('live-transcribing');
         }
 
-        // Auto-sync model settings on startup
-        if (settings.sttModel && data.model !== settings.sttModel && !data.recording && !data.loading && !data.error) {
+        // Auto-sync model and STT settings on startup, unless backend is running 'remote' (we preserve remote)
+        const isRemoteModel = data.model && data.model.startsWith('remote/');
+        const modelNeedsSync = settings.sttModel && data.model !== settings.sttModel && !isRemoteModel;
+        
+        const needsSync = modelNeedsSync || 
+          data.stt_language !== settings.sttLanguage || 
+          data.stt_initial_prompt !== settings.sttInitialPrompt;
+
+        if (needsSync && !data.recording && !data.loading && !data.error) {
           try {
             await fetch(`${API_BASE}/api/config`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ model_size: settings.sttModel })
+              body: JSON.stringify({ 
+                model_size: isRemoteModel ? data.model : settings.sttModel,
+                stt_language: settings.sttLanguage,
+                stt_initial_prompt: settings.sttInitialPrompt
+              })
             });
+            if (isRemoteModel && settings.sttModel !== data.model) {
+              updateSetting('sttModel', data.model);
+            }
           } catch (err) {
             console.error('Failed to sync settings with backend:', err);
           }

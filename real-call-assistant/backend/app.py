@@ -1,5 +1,8 @@
 import os
 import sys
+import warnings
+warnings.filterwarnings("ignore", message=".*discontinuity in recording.*")
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 import asyncio
 import queue
 import threading
@@ -180,13 +183,6 @@ MODELS_METADATA = [
         "accuracy": "very-high acc"
     },
     {
-        "id": "distil-small.en",
-        "name": "Distil Small EN",
-        "size": "164 MB",
-        "speed": "very-fast",
-        "accuracy": "high acc"
-    },
-    {
         "id": "distil-medium.en",
         "name": "Distil Medium EN",
         "size": "383 MB",
@@ -201,18 +197,32 @@ MODELS_METADATA = [
         "accuracy": "very-high acc"
     },
     {
-        "id": "distil-large-v2",
-        "name": "Distil Large v2",
-        "size": "731 MB",
-        "speed": "medium",
-        "accuracy": "very-high acc"
-    },
-    {
         "id": "large-v3-turbo",
         "name": "Whisper Large v3 Turbo",
         "size": "1.6 GB",
         "speed": "medium",
         "accuracy": "excellent acc"
+    },
+    {
+        "id": "Tejveer12/Indian-Accent-English-Whisper-Finetuned",
+        "name": "Indian English (Accent-Finetuned)",
+        "size": "1.6 GB",
+        "speed": "medium",
+        "accuracy": "excellent acc"
+    },
+    {
+        "id": "Trelis/whisper-hinglish-preview",
+        "name": "Hinglish (Code-Switched)",
+        "size": "3.1 GB",
+        "speed": "slow",
+        "accuracy": "excellent acc"
+    },
+    {
+        "id": "ai4bharat/whisper-medium-en-indic",
+        "name": "Indic-English (Medium size)",
+        "size": "1.5 GB",
+        "speed": "medium",
+        "accuracy": "very-high acc"
     },
     {
         "id": "remote/distil-large-v3",
@@ -227,14 +237,63 @@ MODELS_METADATA = [
         "size": "1.6 GB",
         "speed": "blazing-fast",
         "accuracy": "excellent acc"
+    },
+    {
+        "id": "remote/Tejveer12/Indian-Accent-English-Whisper-Finetuned",
+        "name": "Remote GPU (RTX 5090) - Indian English",
+        "size": "1.6 GB",
+        "speed": "blazing-fast",
+        "accuracy": "excellent acc"
+    },
+    {
+        "id": "remote/Trelis/whisper-hinglish-preview",
+        "name": "Remote GPU (RTX 5090) - Hinglish",
+        "size": "3.1 GB",
+        "speed": "blazing-fast",
+        "accuracy": "excellent acc"
+    },
+    {
+        "id": "remote/ai4bharat/whisper-medium-en-indic",
+        "name": "Remote GPU (RTX 5090) - Indic-English",
+        "size": "1.5 GB",
+        "speed": "blazing-fast",
+        "accuracy": "very-high acc"
     }
 ]
 
 
 from pathlib import Path
 import shutil
+from tqdm.auto import tqdm
 
 downloading_models = set()
+download_progress = {}
+download_bytes_tracker = {}
+
+class HubDownloadProgress(tqdm):
+    def __init__(self, *args, model_id=None, total_size=0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.model_id = model_id
+        self.total_size = total_size
+        
+    def update(self, n=1):
+        super().update(n)
+        global download_bytes_tracker, download_progress
+        if self.model_id:
+            download_bytes_tracker[self.model_id] = download_bytes_tracker.get(self.model_id, 0) + n
+            if self.total_size > 0:
+                percent = int((download_bytes_tracker[self.model_id] / self.total_size) * 100)
+                download_progress[self.model_id] = max(0, min(100, percent))
+
+MODEL_REPOS = {
+    "tiny.en": "Systran/faster-whisper-tiny.en",
+    "base.en": "Systran/faster-whisper-base.en",
+    "distil-medium.en": "Systran/faster-distil-whisper-medium.en",
+    "distil-large-v3": "Systran/faster-distil-whisper-large-v3",
+    "large-v3-turbo": "Systran/faster-whisper-large-v3-turbo",
+    "moonshine/tiny": "UsefulSensors/moonshine",
+    "moonshine/base": "UsefulSensors/moonshine",
+}
 
 def check_model_downloaded(model_id: str) -> bool:
     if model_id.startswith("remote/"):
@@ -252,6 +311,14 @@ def check_model_downloaded(model_id: str) -> bool:
             for p in moonshine_repo.glob("**/base/**/encoder_model.onnx"):
                 return True
         return False
+    elif "/" in model_id:
+        safe_name = model_id.replace("/", "--")
+        models_dir = Path(cfg.model_download_root)
+        out_dir = models_dir / f"models--{safe_name}-ct2"
+        if out_dir.exists():
+            for p in out_dir.glob("**/model.bin"):
+                return True
+        return False
     else:
         models_dir = Path(cfg.model_download_root)
         repo_name = f"models--Systran--faster-whisper-{model_id}"
@@ -262,28 +329,77 @@ def check_model_downloaded(model_id: str) -> bool:
         return False
 
 def download_model_worker(model_id: str):
-    global downloading_models
+    global downloading_models, download_progress, download_bytes_tracker
     try:
         print(f"Starting download for model '{model_id}'...")
+        download_progress[model_id] = 0
+        download_bytes_tracker[model_id] = 0
+        
+        repo_id = MODEL_REPOS.get(model_id, model_id)
+        
+        # Get total size programmatically using HfApi
+        from huggingface_hub import HfApi
+        total_size = 0
+        try:
+            api = HfApi()
+            info = api.model_info(repo_id)
+            total_size = sum(f.size for f in info.siblings if f.size)
+        except Exception as e:
+            print(f"Warning: could not get repo info for progress calculation: {e}")
+            
+        from functools import partial
+        progress_class = partial(HubDownloadProgress, model_id=model_id, total_size=total_size)
+        
+        from huggingface_hub import snapshot_download
+        models_dir = Path(cfg.model_download_root)
+        
         if model_id.startswith("moonshine/"):
-            # Instantiate MoonshineDirectMLEngine on CPU to download weights safely
-            MoonshineDirectMLEngine(
-                model_size=model_id,
-                device="cpu",
-                compute_type="float",
-                download_root=cfg.model_download_root
+            # Moonshine: download using snapshot_download with the custom progress
+            snapshot_download(
+                repo_id=repo_id,
+                tqdm_class=progress_class
             )
+        elif "/" in model_id:
+            # Custom model: e.g. Tejveer12/Indian-Accent-English-Whisper-Finetuned
+            safe_name = model_id.replace("/", "--")
+            raw_dir = models_dir / f"models--{safe_name}-raw"
+            out_dir = models_dir / f"models--{safe_name}-ct2"
+            
+            snapshot_download(
+                repo_id=repo_id,
+                local_dir=raw_dir,
+                tqdm_class=progress_class
+            )
+            
+            # Show 99% progress when starting CTranslate2 conversion
+            download_progress[model_id] = 99
+            
+            import sys
+            import subprocess
+            print(f"Converting PyTorch model '{model_id}' to CTranslate2...")
+            subprocess.run([
+                sys.executable, "-m", "ctranslate2.converters.transformers",
+                "--model", str(raw_dir),
+                "--output_dir", str(out_dir),
+                "--copy_files", "tokenizer.json", "preprocessor_config.json",
+                "--quantization", "int8"
+            ], check=True)
+            
+            shutil.rmtree(raw_dir)
         else:
-            from faster_whisper import WhisperModel
-            WhisperModel(
-                model_id,
-                device="cpu",
-                compute_type="int8",
-                download_root=cfg.model_download_root
+            # Standard Systran model: download directly via snapshot_download
+            snapshot_download(
+                repo_id=repo_id,
+                tqdm_class=progress_class
             )
+            
+        download_progress[model_id] = 100
         print(f"Finished downloading model '{model_id}' successfully.")
     except Exception as e:
         print(f"Error downloading model '{model_id}': {e}")
+        # Clear progress on failure
+        if model_id in download_progress:
+            del download_progress[model_id]
     finally:
         if model_id in downloading_models:
             downloading_models.remove(model_id)
@@ -297,6 +413,12 @@ def delete_model_files(model_id: str):
             repo_dir = hf_cache_dir / name
             if repo_dir.exists():
                 shutil.rmtree(repo_dir)
+    elif "/" in model_id:
+        safe_name = model_id.replace("/", "--")
+        models_dir = Path(cfg.model_download_root)
+        out_dir = models_dir / f"models--{safe_name}-ct2"
+        if out_dir.exists():
+            shutil.rmtree(out_dir)
     else:
         models_dir = Path(cfg.model_download_root)
         repo_name = f"models--Systran--faster-whisper-{model_id}"
@@ -328,11 +450,15 @@ def load_engines(model_size: str):
         actual_model = model_size.replace("remote/", "")
         new_mic_engine = RemoteSTTEngine(
             model_size=actual_model,
-            remote_url=cfg.remote_url
+            remote_url=cfg.remote_url,
+            language=cfg.stt_language,
+            initial_prompt=cfg.stt_initial_prompt
         )
         new_sys_engine = RemoteSTTEngine(
             model_size=actual_model,
-            remote_url=cfg.remote_url
+            remote_url=cfg.remote_url,
+            language=cfg.stt_language,
+            initial_prompt=cfg.stt_initial_prompt
         )
     elif engine_type == "moonshine":
         new_mic_engine = MoonshineDirectMLEngine(
@@ -348,17 +474,30 @@ def load_engines(model_size: str):
             download_root=cfg.model_download_root,
         )
     else:
+        # Check if it is a local custom model
+        load_path = model_size
+        if "/" in model_size and not model_size.startswith("moonshine/"):
+            safe_name = model_size.replace("/", "--")
+            models_dir = Path(cfg.model_download_root)
+            out_dir = models_dir / f"models--{safe_name}-ct2"
+            if out_dir.exists():
+                load_path = str(out_dir)
+                
         new_mic_engine = FasterWhisperEngine(
-            model_size,
+            load_path,
             device,
             compute_type,
             download_root=cfg.model_download_root,
+            language=cfg.stt_language,
+            initial_prompt=cfg.stt_initial_prompt
         )
         new_sys_engine = FasterWhisperEngine(
-            model_size,
+            load_path,
             device,
             compute_type,
             download_root=cfg.model_download_root,
+            language=cfg.stt_language,
+            initial_prompt=cfg.stt_initial_prompt
         )
         
     # Update config
@@ -473,7 +612,7 @@ def start_recording():
 def reprocess_recording(mic_audio, sys_audio, cfg, mic_engine, sys_engine):
     import webrtcvad
     from pipeline.channel_worker import stt_lock
-    from pipeline.transcript_normalizer import clean_text
+    from pipeline.transcript_normalizer import clean_text, is_whisper_hallucination
     
     # 1. Pre-calculate system loopback activity timestamps for room echo masking
     sys_active_times = []
@@ -590,12 +729,9 @@ def reprocess_recording(mic_audio, sys_audio, cfg, mic_engine, sys_engine):
             with stt_lock:
                 text = clean_text(mic_engine.transcribe(seg["audio"], cfg.sample_rate))
             if text:
-                # Suspected Whisper hallucination check on low energy
-                cleaned_lower = text.lower().strip().replace("’", "'").translate(str.maketrans("", "", ".,?!"))
-                if cleaned_lower in ["thank you", "thank you so much", "i don't know", "you", "yeah", "yes", "oh", "bye"]:
-                    if rms < 0.025:
-                        print(f"Post-processing: skipping suspected Whisper hallucination '{text}' (RMS: {rms:.4f})")
-                        continue
+                if is_whisper_hallucination(text, rms):
+                    print(f"Post-processing: skipping suspected Whisper hallucination '{text}' (RMS: {rms:.4f}, channel: Speaker 1)")
+                    continue
 
                 processed_segments.append({
                     "speaker": "Speaker 1",
@@ -609,9 +745,19 @@ def reprocess_recording(mic_audio, sys_audio, cfg, mic_engine, sys_engine):
     # Transcribe System loopback segments (Speaker 2)
     for seg in sys_segs:
         try:
+            # Segment RMS check
+            rms = np.sqrt(np.mean(seg["audio"]**2)) if len(seg["audio"]) > 0 else 0.0
+            if rms < 0.008:
+                print(f"Post-processing: skipping quiet sys segment (RMS: {rms:.4f})")
+                continue
+
             with stt_lock:
                 text = clean_text(sys_engine.transcribe(seg["audio"], cfg.sample_rate))
             if text:
+                if is_whisper_hallucination(text, rms):
+                    print(f"Post-processing: skipping suspected Whisper hallucination '{text}' (RMS: {rms:.4f}, channel: Speaker 2)")
+                    continue
+
                 processed_segments.append({
                     "speaker": "Speaker 2",
                     "start_ts": seg["start_ts"],
@@ -748,7 +894,9 @@ def get_status():
         "model": cfg.model_size,
         "model_name": model_name,
         "loading": is_loading_engine,
-        "error": engine_load_error
+        "error": engine_load_error,
+        "stt_language": cfg.stt_language,
+        "stt_initial_prompt": cfg.stt_initial_prompt
     }
 
 @app.get("/api/hardware-recommendation")
@@ -767,7 +915,9 @@ def get_config():
         "device": cfg.device,
         "compute_type": cfg.compute_type,
         "mic_device": cfg.mic_device,
-        "speaker_device": cfg.speaker_device
+        "speaker_device": cfg.speaker_device,
+        "stt_language": cfg.stt_language,
+        "stt_initial_prompt": cfg.stt_initial_prompt
     }
 
 @app.post("/api/config")
@@ -781,9 +931,21 @@ def update_config(data: dict = Body(...)):
         cfg.mic_device = data.get("mic_device")
     if "speaker_device" in data:
         cfg.speaker_device = data.get("speaker_device")
+    if "stt_language" in data:
+        cfg.stt_language = data.get("stt_language")
+        if mic_engine and hasattr(mic_engine, "language"):
+            mic_engine.language = cfg.stt_language
+        if sys_engine and hasattr(sys_engine, "language"):
+            sys_engine.language = cfg.stt_language
+    if "stt_initial_prompt" in data:
+        cfg.stt_initial_prompt = data.get("stt_initial_prompt")
+        if mic_engine and hasattr(mic_engine, "initial_prompt"):
+            mic_engine.initial_prompt = cfg.stt_initial_prompt
+        if sys_engine and hasattr(sys_engine, "initial_prompt"):
+            sys_engine.initial_prompt = cfg.stt_initial_prompt
         
     model_size = data.get("model_size")
-    if model_size:
+    if model_size and model_size != cfg.model_size:
         if is_loading_engine:
             raise HTTPException(status_code=400, detail="Model is already loading in the background.")
         # Start the background engine loading thread
@@ -854,6 +1016,7 @@ def get_models():
                 "accuracy": m["accuracy"],
                 "downloaded": downloaded,
                 "downloading": downloading,
+                "progress": download_progress.get(model_id, 0) if downloading else 0,
                 "is_recommended": is_rec
             })
         return result
