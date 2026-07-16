@@ -187,7 +187,7 @@ MODELS_METADATA = [
     {
         "id": "distil-medium.en",
         "name": "Distil Medium EN",
-        "size": "383 MB",
+        "size": "789 MB",
         "speed": "fast",
         "accuracy": "very-high acc"
     },
@@ -335,8 +335,9 @@ def check_model_downloaded(model_id: str) -> bool:
         return False
     else:
         models_dir = Path(cfg.model_download_root)
-        repo_name = f"models--Systran--faster-whisper-{model_id}"
-        repo_dir = models_dir / repo_name
+        repo_id = MODEL_REPOS.get(model_id, model_id)
+        safe_name = repo_id.replace("/", "--")
+        repo_dir = models_dir / f"models--{safe_name}"
         if repo_dir.exists():
             for p in repo_dir.glob("**/model.bin"):
                 return True

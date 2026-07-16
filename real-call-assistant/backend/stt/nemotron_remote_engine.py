@@ -24,10 +24,8 @@ class NemotronRemoteEngine(STTEngine):
             else:
                 self.remote_url += "/transcribe"
                 
-        # Map simple language codes to NeMo prompt keys (e.g. 'en' -> 'en-US')
-        self.language = language or "en"
-        if self.language == "en":
-            self.language = "en-US"
+        # Hardcode language as en-GB for Indian English
+        self.language = "en-GB"
             
         self.device = f"Remote GPU Nemotron ({self.remote_url})"
         self.total_transcribe_time = 0.0
