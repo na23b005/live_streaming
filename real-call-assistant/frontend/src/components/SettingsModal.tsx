@@ -43,77 +43,6 @@ export const SettingsModal: React.FC = () => {
   const [models, setModels] = React.useState<STTModel[]>([]);
   const [recommendedModelName, setRecommendedModelName] = React.useState('Moonshine Tiny');
   
-  // Accent configuration states
-  const [selectedPresetId, setSelectedPresetId] = React.useState(() => {
-    const lang = settings.sttLanguage || 'en';
-    const prompt = settings.sttInitialPrompt || '';
-    if (lang === 'en' && prompt === 'Indian English accent, conversation, terminology.') return 'indian-english';
-    if (lang === '' && prompt === '') return 'global-english';
-    if (lang === 'en' && prompt === 'Standard English, conversation.') return 'us-uk-english';
-    return 'custom';
-  });
-
-  React.useEffect(() => {
-    const lang = settings.sttLanguage;
-    const prompt = settings.sttInitialPrompt;
-    if (lang === 'en' && prompt === 'Indian English accent, conversation, terminology.') {
-      setSelectedPresetId('indian-english');
-    } else if (lang === '' && prompt === '') {
-      setSelectedPresetId('global-english');
-    } else if (lang === 'en' && prompt === 'Standard English, conversation.') {
-      setSelectedPresetId('us-uk-english');
-    } else {
-      setSelectedPresetId('custom');
-    }
-  }, [settings.sttLanguage, settings.sttInitialPrompt]);
-
-  const handlePresetChange = async (presetId: string) => {
-    setSelectedPresetId(presetId);
-    let lang = settings.sttLanguage;
-    let prompt = settings.sttInitialPrompt;
-
-    if (presetId === 'indian-english') {
-      lang = 'en';
-      prompt = 'Indian English accent, conversation, terminology.';
-    } else if (presetId === 'global-english') {
-      lang = '';
-      prompt = '';
-    } else if (presetId === 'us-uk-english') {
-      lang = 'en';
-      prompt = 'Standard English, conversation.';
-    }
-
-    updateSetting('sttLanguage', lang);
-    updateSetting('sttInitialPrompt', prompt);
-
-    try {
-      await fetch(`${API_BASE}/api/config`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ stt_language: lang, stt_initial_prompt: prompt })
-      });
-    } catch (e) {
-      console.error('Failed to sync STT config with backend:', e);
-    }
-  };
-
-  const handleCustomConfigChange = async (type: 'language' | 'prompt', value: string) => {
-    let lang = type === 'language' ? value : settings.sttLanguage;
-    let prompt = type === 'prompt' ? value : settings.sttInitialPrompt;
-
-    updateSetting(type === 'language' ? 'sttLanguage' : 'sttInitialPrompt', value);
-
-    try {
-      await fetch(`${API_BASE}/api/config`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ stt_language: lang, stt_initial_prompt: prompt })
-      });
-    } catch (e) {
-      console.error('Failed to sync custom STT config with backend:', e);
-    }
-  };
-
   // Audio devices configuration states
   const [mics, setMics] = React.useState<{id: string, name: string}[]>([]);
   const [speakers, setSpeakers] = React.useState<{id: string, name: string}[]>([]);
@@ -331,6 +260,20 @@ export const SettingsModal: React.FC = () => {
       }
     } catch (e) {
       console.error('Failed to start model download:', e);
+    }
+  };
+  const handleCancelDownload = async (modelId: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/models/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model_id: modelId })
+      });
+      if (res.ok) {
+        fetchModels();
+      }
+    } catch (e) {
+      console.error('Failed to cancel model download:', e);
     }
   };
 
@@ -681,76 +624,7 @@ export const SettingsModal: React.FC = () => {
                 </div>
               </div>
 
-              {/* Accent & Transcription settings Card */}
-              <div className="engine-config-card" style={{ marginTop: '1.25rem' }}>
-                <h3 className="section-title">Accent & Transcription Configuration</h3>
-                <p className="section-subtitle">
-                  Configure accent profiles and vocabulary biasing (prompts) to maximize live transcription accuracy.
-                </p>
 
-                <div className="settings-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1rem', marginTop: '1rem' }}>
-                  <div className="global-model-selector-group" style={{ margin: 0 }}>
-                    <span className="group-label">ACCENT PROFILE Preset</span>
-                    <div className="select-container">
-                      <select
-                        value={selectedPresetId}
-                        onChange={(e) => handlePresetChange(e.target.value)}
-                        className="model-select-dropdown"
-                      >
-                        <option value="indian-english">🇮🇳 Indian English (Recommended)</option>
-                        <option value="global-english">🌐 Global English (Auto-Detect)</option>
-                        <option value="us-uk-english">🇺🇸/🇬🇧 Standard English</option>
-                        <option value="custom">✏️ Custom Profile...</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  <div className="global-model-selector-group" style={{ margin: 0 }}>
-                    <span className="group-label">STT LANGUAGE CODE</span>
-                    <input
-                      type="text"
-                      value={settings.sttLanguage}
-                      onChange={(e) => handleCustomConfigChange('language', e.target.value)}
-                      disabled={selectedPresetId !== 'custom'}
-                      style={{
-                        width: '100%',
-                        padding: '0.45rem 0.75rem',
-                        backgroundColor: '#1f2029',
-                        border: '1px solid #2e2f3d',
-                        borderRadius: '6px',
-                        color: 'var(--text-primary)',
-                        fontSize: '0.85rem'
-                      }}
-                      placeholder="e.g. en, hi, te"
-                    />
-                  </div>
-                </div>
-
-                <div className="global-model-selector-group" style={{ marginTop: '1rem' }}>
-                  <span className="group-label">INITIAL PROMPT / SPEECH HINTS (HOTWORDS)</span>
-                  <textarea
-                    value={settings.sttInitialPrompt}
-                    onChange={(e) => handleCustomConfigChange('prompt', e.target.value)}
-                    disabled={selectedPresetId !== 'custom'}
-                    style={{
-                      width: '100%',
-                      minHeight: '60px',
-                      padding: '0.5rem 0.75rem',
-                      backgroundColor: '#1f2029',
-                      border: '1px solid #2e2f3d',
-                      borderRadius: '6px',
-                      color: 'var(--text-primary)',
-                      fontSize: '0.85rem',
-                      resize: 'vertical',
-                      fontFamily: 'inherit'
-                    }}
-                    placeholder="Enter keywords, names, or terminology (e.g. Indian English accent, project names, technical terms)."
-                  />
-                  <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.35rem' }}>
-                    Priming Whisper with hints dramatically improves recognition of accented words, custom acronyms, and proper nouns.
-                  </p>
-                </div>
-              </div>
 
               {/* Model Manager Section */}
               <div className="model-manager-section" style={{ marginBottom: '2.5rem' }}>
@@ -789,13 +663,36 @@ export const SettingsModal: React.FC = () => {
 
                       <div className="model-action-right">
                         {m.downloading ? (
-                          <div className="downloading-container" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '6px', minWidth: '130px' }}>
+                          <div className="downloading-container" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '6px', minWidth: '150px' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8rem', color: '#6366f1', fontWeight: 500 }}>
                               <div className="spinner-small" style={{ width: '12px', height: '12px', borderWidth: '2px', animation: 'spin 1s linear infinite' }}></div>
-                              <span>{m.progress && m.progress > 0 ? (m.progress === 99 ? 'Converting...' : `Downloading (${m.progress}%)`) : 'Starting...'}</span>
+                              <span>{m.progress !== undefined && m.progress >= 0 ? (m.progress === 99 ? 'Converting...' : `Downloading (${m.progress}%)`) : 'Starting...'}</span>
                             </div>
-                            <div className="progress-bar-bg" style={{ width: '100%', height: '4px', backgroundColor: '#2e2f3d', borderRadius: '2px', overflow: 'hidden' }}>
-                              <div className="progress-bar-fill" style={{ width: `${m.progress || 0}%`, height: '100%', backgroundColor: '#6366f1', transition: 'width 0.3s ease' }}></div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%' }}>
+                              <div className="progress-bar-bg" style={{ flexGrow: 1, height: '4px', backgroundColor: '#2e2f3d', borderRadius: '2px', overflow: 'hidden' }}>
+                                <div className="progress-bar-fill" style={{ width: `${m.progress || 0}%`, height: '100%', backgroundColor: '#6366f1', transition: 'width 0.3s ease' }}></div>
+                              </div>
+                              <button
+                                className="btn-cancel-download"
+                                onClick={() => handleCancelDownload(m.id)}
+                                style={{
+                                  background: 'none',
+                                  border: 'none',
+                                  color: '#ef4444',
+                                  cursor: 'pointer',
+                                  padding: '2px',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  opacity: 0.8,
+                                  transition: 'opacity 0.2s, transform 0.2s',
+                                }}
+                                onMouseEnter={(e) => e.currentTarget.style.opacity = '1'}
+                                onMouseLeave={(e) => e.currentTarget.style.opacity = '0.8'}
+                                title="Cancel Download"
+                              >
+                                <X size={14} />
+                              </button>
                             </div>
                           </div>
                         ) : m.downloaded ? (

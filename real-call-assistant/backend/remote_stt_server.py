@@ -1,6 +1,6 @@
 import io
 import os
-os.environ["HF_TOKEN"] = "hf_8*****"
+os.environ["HF_TOKEN"] = os.getenv("HF_TOKEN", "")
 import argparse
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -62,42 +62,96 @@ def get_model(model_size: str) -> WhisperModel:
     return models_cache[model_size]
 
 @app.post("/transcribe")
-async def transcribe(
+def transcribe(
     file: UploadFile = File(...), 
     model_size: str = Form("large-v3-turbo"),
     language: str = Form(None),
-    initial_prompt: str = Form(None)
+    initial_prompt: str = Form(None),
+    hotwords: str = Form(None),
+    prefix: str = Form(None)
 ):
     if not file:
         raise HTTPException(status_code=400, detail="No audio file provided.")
         
     try:
-        audio_bytes = await file.read()
-        audio_file = io.BytesIO(audio_bytes)
-        audio_file.name = "audio.wav"
+        audio_bytes = file.file.read()
         
+        # Parse WAV bytes to float32 numpy array to evaluate RMS energy
+        import wave
+        import numpy as np
+        
+        audio_file = io.BytesIO(audio_bytes)
+        try:
+            with wave.open(audio_file, 'rb') as wav:
+                sampwidth = wav.getsampwidth()
+                n_frames = wav.getnframes()
+                frame_data = wav.readframes(n_frames)
+            if sampwidth == 2:
+                audio_np = np.frombuffer(frame_data, dtype=np.int16).astype(np.float32) / 32767.0
+            else:
+                audio_np = np.frombuffer(frame_data, dtype=np.float32)
+        except Exception:
+            # Fallback if parsing fails, use empty array
+            audio_np = np.empty(0, dtype=np.float32)
+
+        # Root mean square (RMS) threshold to filter out silence/ambient hum
+        rms = np.sqrt(np.mean(audio_np**2)) if len(audio_np) > 0 else 0.0
+        if rms < 0.006:
+            return {"text": "", "segments": []}
+            
         # Load the model dynamically (cached)
         model = get_model(model_size)
         
-        # Transcribe audio segment
-        b_size = 2 if language == "en" else 1
+        # Transcribe audio segment (faster-whisper accepts numpy float32 arrays directly)
+        prefix_val = prefix if prefix else None
+        hotwords_val = hotwords if hotwords else None
+        
         segments, info = model.transcribe(
-            audio_file, 
-            beam_size=b_size, 
+            audio_np, 
+            beam_size=4, 
             language=language if language else None, 
             initial_prompt=initial_prompt if initial_prompt else None, 
-            vad_filter=True
+            prefix=prefix_val,
+            hotwords=hotwords_val,
+            vad_filter=True,
+            condition_on_previous_text=False,
+            no_speech_threshold=0.85,
+            compression_ratio_threshold=2.4,
+            log_prob_threshold=-1.5,
+            temperature=0.0,
         )
         
         texts = []
+        segments_data = []
         for seg in segments:
-            # Relaxed thresholds to prevent trailing accented words from being skipped
-            if seg.no_speech_prob > 0.85 or seg.avg_logprob < -1.5:
-                continue
+            # Layer 2b: Whisper's own no-speech detection (relaxed for Indian accent/code-switching)
+            if seg.no_speech_prob > 0.85:
+                continue  # Skip: Whisper thinks this is silence/noise
+            
+            # Layer 2c: Repetition detection via compression ratio (stuttering)
+            if seg.compression_ratio > 2.4:
+                continue  # Skip: likely stuck in repetition loop
+            
+            # Layer 2d: Low-confidence detection (relaxed floor for Indian accent)
+            if seg.avg_logprob < -1.5:
+                continue  # Skip: Whisper is guessing
+                
+            # Filter out common silence hallucinations if confidence is low
+            cleaned_text = seg.text.strip().lower().replace(".", "").replace(",", "").replace("!", "").replace("?", "")
+            if cleaned_text in ("thank you", "thank you for watching"):
+                if seg.avg_logprob < -1.0 or seg.no_speech_prob > 0.6:
+                    continue  # Skip: likely hallucination on silence/noise
+                
             texts.append(seg.text.strip())
+            segments_data.append({
+                "text": seg.text.strip(),
+                "start": seg.start,
+                "end": seg.end,
+                "avg_logprob": seg.avg_logprob
+            })
         text = " ".join(texts).strip()
         
-        return {"text": text}
+        return {"text": text, "segments": segments_data}
     except Exception as e:
         print(f"Error during transcription: {e}")
         raise HTTPException(status_code=500, detail=str(e))

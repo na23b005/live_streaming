@@ -15,6 +15,6 @@ import numpy as np
 
 class STTEngine(ABC):
     @abstractmethod
-    def transcribe(self, audio: np.ndarray, samplerate: int) -> str:
+    def transcribe(self, audio: np.ndarray, samplerate: int, meeting_id: str | None = None) -> str:
         """Return transcribed text for a mono float32 audio array."""
         raise NotImplementedError

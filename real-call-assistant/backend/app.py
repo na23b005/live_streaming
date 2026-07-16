@@ -19,13 +19,14 @@ from pydantic import BaseModel
 # Import config first so Hugging Face environment variables are set before other modules load.
 from config import Config
 from audio.capture import MicCapture, SystemAudioCapture
-from audio.vad_segmenter import VADSegmenter
-from audio.echo_cancellation import WebRTCAcousticEchoCanceller
+from audio.vad_segmenter import VADSegmenter, SileroVAD
+from audio.echo_cancellation import WebRTCAcousticEchoCanceller, calibrate_aec_delay
 from pipeline.channel_worker import ChannelWorker, TranscriptEvent
 from pipeline.transcript_normalizer import format_line
 from stt.moonshine_dml_engine import MoonshineDirectMLEngine
 from stt.faster_whisper_engine import FasterWhisperEngine
 from stt.remote_engine import RemoteSTTEngine
+from stt.nemotron_remote_engine import NemotronRemoteEngine
 import webview
 import subprocess
 
@@ -49,6 +50,7 @@ sys_worker = None
 out_queue = queue.Queue()
 recording_active = False
 active_sockets = []
+current_meeting_id = None
 
 is_loading_engine = False
 engine_load_error = None
@@ -192,7 +194,7 @@ MODELS_METADATA = [
     {
         "id": "distil-large-v3",
         "name": "Distil Large v3",
-        "size": "731 MB",
+        "size": "1.51 GB",
         "speed": "medium",
         "accuracy": "very-high acc"
     },
@@ -227,7 +229,7 @@ MODELS_METADATA = [
     {
         "id": "remote/distil-large-v3",
         "name": "Remote GPU (RTX 5090) - Distil Large v3",
-        "size": "731 MB",
+        "size": "1.51 GB",
         "speed": "blazing-fast",
         "accuracy": "excellent acc"
     },
@@ -258,6 +260,13 @@ MODELS_METADATA = [
         "size": "1.5 GB",
         "speed": "blazing-fast",
         "accuracy": "very-high acc"
+    },
+    {
+        "id": "remote/nvidia-nemotron-3.5",
+        "name": "Remote GPU (RTX 5090) - Nemotron 3.5 ASR",
+        "size": "1.2 GB",
+        "speed": "blazing-fast",
+        "accuracy": "excellent acc"
     }
 ]
 
@@ -267,6 +276,7 @@ import shutil
 from tqdm.auto import tqdm
 
 downloading_models = set()
+cancelled_downloads = set()
 download_progress = {}
 download_bytes_tracker = {}
 
@@ -277,6 +287,10 @@ class HubDownloadProgress(tqdm):
         self.total_size = total_size
         
     def update(self, n=1):
+        global cancelled_downloads
+        if self.model_id and self.model_id in cancelled_downloads:
+            raise RuntimeError("Download cancelled by user")
+            
         super().update(n)
         global download_bytes_tracker, download_progress
         if self.model_id:
@@ -337,18 +351,28 @@ def download_model_worker(model_id: str):
         
         repo_id = MODEL_REPOS.get(model_id, model_id)
         
-        # Get total size programmatically using HfApi
+        # Get total size programmatically using HfApi with a retry loop for transient timeouts (502/504)
         from huggingface_hub import HfApi
+        import time
         total_size = 0
-        try:
-            api = HfApi()
-            info = api.model_info(repo_id)
-            total_size = sum(f.size for f in info.siblings if f.size)
-        except Exception as e:
-            print(f"Warning: could not get repo info for progress calculation: {e}")
+        for attempt in range(3):
+            try:
+                api = HfApi()
+                info = api.model_info(repo_id, files_metadata=True)
+                total_size = sum(f.size for f in info.siblings if f.size)
+                break
+            except Exception as e:
+                if attempt == 2:
+                    print(f"Warning: could not get repo info for progress calculation after 3 attempts: {e}")
+                else:
+                    time.sleep(1.5)
             
-        from functools import partial
-        progress_class = partial(HubDownloadProgress, model_id=model_id, total_size=total_size)
+        # Dynamically subclass HubDownloadProgress to avoid 'functools.partial' object has no attribute 'get_lock' error in tqdm thread_map
+        class DynamicHubDownloadProgress(HubDownloadProgress):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, model_id=model_id, total_size=total_size, **kwargs)
+        
+        progress_class = DynamicHubDownloadProgress
         
         from huggingface_hub import snapshot_download
         models_dir = Path(cfg.model_download_root)
@@ -357,6 +381,7 @@ def download_model_worker(model_id: str):
             # Moonshine: download using snapshot_download with the custom progress
             snapshot_download(
                 repo_id=repo_id,
+                cache_dir=str(models_dir),
                 tqdm_class=progress_class
             )
         elif "/" in model_id:
@@ -390,6 +415,7 @@ def download_model_worker(model_id: str):
             # Standard Systran model: download directly via snapshot_download
             snapshot_download(
                 repo_id=repo_id,
+                cache_dir=str(models_dir),
                 tqdm_class=progress_class
             )
             
@@ -397,6 +423,14 @@ def download_model_worker(model_id: str):
         print(f"Finished downloading model '{model_id}' successfully.")
     except Exception as e:
         print(f"Error downloading model '{model_id}': {e}")
+        global cancelled_downloads
+        if model_id in cancelled_downloads:
+            print(f"Cleaning up files for cancelled model '{model_id}'...")
+            try:
+                delete_model_files(model_id)
+            except Exception as cleanup_err:
+                print(f"Error cleaning up files for cancelled model: {cleanup_err}")
+            cancelled_downloads.remove(model_id)
         # Clear progress on failure
         if model_id in download_progress:
             del download_progress[model_id]
@@ -407,24 +441,41 @@ def download_model_worker(model_id: str):
 def delete_model_files(model_id: str):
     if model_id.startswith("remote/"):
         return
-    hf_cache_dir = Path(os.environ.get("HF_HUB_CACHE", "E:/Local transcribe/local-transcribe/models"))
+    models_dir = Path(cfg.model_download_root)
+    hf_cache_dir = Path(os.environ.get("HF_HUB_CACHE", str(models_dir)))
+    
+    # 1. Clean up locks if any
+    try:
+        locks_dir = hf_cache_dir / ".locks"
+        if locks_dir.exists():
+            for p in list(locks_dir.glob("**/*")):
+                if p.is_file() and model_id in p.name:
+                    p.unlink(missing_ok=True)
+    except Exception as e:
+        print(f"Warning: could not clear locks for '{model_id}': {e}")
+        
+    # 2. Delete the actual directories
     if model_id.startswith("moonshine/"):
         for name in ["models--useful-sensors--moonshine", "models--UsefulSensors--moonshine"]:
             repo_dir = hf_cache_dir / name
             if repo_dir.exists():
-                shutil.rmtree(repo_dir)
-    elif "/" in model_id:
+                shutil.rmtree(repo_dir, ignore_errors=True)
+    elif "/" in model_id and not model_id.startswith("moonshine/"):
+        # Custom converted models
         safe_name = model_id.replace("/", "--")
-        models_dir = Path(cfg.model_download_root)
+        raw_dir = models_dir / f"models--{safe_name}-raw"
         out_dir = models_dir / f"models--{safe_name}-ct2"
+        if raw_dir.exists():
+            shutil.rmtree(raw_dir, ignore_errors=True)
         if out_dir.exists():
-            shutil.rmtree(out_dir)
+            shutil.rmtree(out_dir, ignore_errors=True)
     else:
-        models_dir = Path(cfg.model_download_root)
-        repo_name = f"models--Systran--faster-whisper-{model_id}"
-        repo_dir = models_dir / repo_name
+        # Standard Systran models
+        repo_id = MODEL_REPOS.get(model_id, model_id)
+        safe_name = repo_id.replace("/", "--")
+        repo_dir = models_dir / f"models--{safe_name}"
         if repo_dir.exists():
-            shutil.rmtree(repo_dir)
+            shutil.rmtree(repo_dir, ignore_errors=True)
 
 def load_engines(model_size: str):
     global mic_engine, sys_engine, cfg
@@ -448,18 +499,34 @@ def load_engines(model_size: str):
     if engine_type == "remote":
         # Extract the backend model size (e.g. distil-large-v3)
         actual_model = model_size.replace("remote/", "")
-        new_mic_engine = RemoteSTTEngine(
-            model_size=actual_model,
-            remote_url=cfg.remote_url,
-            language=cfg.stt_language,
-            initial_prompt=cfg.stt_initial_prompt
-        )
-        new_sys_engine = RemoteSTTEngine(
-            model_size=actual_model,
-            remote_url=cfg.remote_url,
-            language=cfg.stt_language,
-            initial_prompt=cfg.stt_initial_prompt
-        )
+        if "nemotron" in actual_model:
+            new_mic_engine = NemotronRemoteEngine(
+                model_size=actual_model,
+                remote_url=cfg.remote_url,
+                language=cfg.stt_language
+            )
+            new_sys_engine = NemotronRemoteEngine(
+                model_size=actual_model,
+                remote_url=cfg.remote_url,
+                language=cfg.stt_language
+            )
+        else:
+            new_mic_engine = RemoteSTTEngine(
+                model_size=actual_model,
+                remote_url=cfg.remote_url,
+                language=cfg.stt_language,
+                initial_prompt=cfg.stt_initial_prompt,
+                hotwords=cfg.stt_hotwords,
+                prefix=cfg.stt_prefix
+            )
+            new_sys_engine = RemoteSTTEngine(
+                model_size=actual_model,
+                remote_url=cfg.remote_url,
+                language=cfg.stt_language,
+                initial_prompt=cfg.stt_initial_prompt,
+                hotwords=cfg.stt_hotwords,
+                prefix=cfg.stt_prefix
+            )
     elif engine_type == "moonshine":
         new_mic_engine = MoonshineDirectMLEngine(
             model_size,
@@ -489,7 +556,9 @@ def load_engines(model_size: str):
             compute_type,
             download_root=cfg.model_download_root,
             language=cfg.stt_language,
-            initial_prompt=cfg.stt_initial_prompt
+            initial_prompt=cfg.stt_initial_prompt,
+            hotwords=cfg.stt_hotwords,
+            prefix=cfg.stt_prefix
         )
         new_sys_engine = FasterWhisperEngine(
             load_path,
@@ -497,7 +566,9 @@ def load_engines(model_size: str):
             compute_type,
             download_root=cfg.model_download_root,
             language=cfg.stt_language,
-            initial_prompt=cfg.stt_initial_prompt
+            initial_prompt=cfg.stt_initial_prompt,
+            hotwords=cfg.stt_hotwords,
+            prefix=cfg.stt_prefix
         )
         
     # Update config
@@ -532,7 +603,37 @@ def build_segmenter(cfg: Config) -> VADSegmenter:
         min_speech_ms=cfg.min_speech_ms,
         max_segment_s=cfg.max_segment_s,
         rms_threshold=cfg.vad_rms_threshold,
+        threshold=cfg.vad_threshold,
     )
+
+def auto_save_loop():
+    global recording_active, current_session_segments, current_session_start_time, current_meeting_id, cfg
+    import time
+    import datetime
+    import json
+    import os
+    while True:
+        time.sleep(30)
+        if recording_active and current_meeting_id:
+            try:
+                duration = 0.0
+                if current_session_start_time:
+                    duration = (datetime.datetime.now() - current_session_start_time).total_seconds()
+                
+                meeting_data = {
+                    "id": current_meeting_id,
+                    "title": "Active Meeting",
+                    "date": current_session_start_time.isoformat() if current_session_start_time else datetime.datetime.now().isoformat(),
+                    "duration": duration,
+                    "segments": list(current_session_segments),
+                    "status": "active"
+                }
+                os.makedirs(cfg.history_dir, exist_ok=True)
+                file_path = os.path.join(cfg.history_dir, "active_meeting.json")
+                with open(file_path, "w", encoding="utf-8") as f:
+                    json.dump(meeting_data, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                print(f"[AutoSave] Error saving active meeting: {e}")
 
 @app.on_event("startup")
 def startup_event():
@@ -540,11 +641,12 @@ def startup_event():
     print("Initializing STT engines in background...")
     import threading
     threading.Thread(target=bg_load_engines, args=(cfg.model_size,), daemon=True).start()
+    threading.Thread(target=auto_save_loop, daemon=True).start()
 
 @app.post("/api/start")
 def start_recording():
     global mic_worker, sys_worker, recording_active, out_queue
-    global current_session_segments, current_session_start_time
+    global current_session_segments, current_session_start_time, current_meeting_id
     if recording_active:
         return {"status": "already_recording"}
         
@@ -558,17 +660,44 @@ def start_recording():
     # Reset active session store
     current_session_segments = []
     current_session_start_time = datetime.datetime.now()
+    meeting_id = f"meeting_{current_session_start_time.strftime('%Y%m%d_%H%M%S')}"
+    current_meeting_id = meeting_id
+
+    # Write initial active_meeting.json to disk
+    try:
+        meeting_data = {
+            "id": meeting_id,
+            "title": "Active Meeting",
+            "date": current_session_start_time.isoformat(),
+            "duration": 0.0,
+            "segments": [],
+            "status": "active"
+        }
+        os.makedirs(cfg.history_dir, exist_ok=True)
+        file_path = os.path.join(cfg.history_dir, "active_meeting.json")
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(meeting_data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Failed to save initial active meeting state: {e}")
             
     # Initialize echo canceller if enabled
     echo_canceller = None
     if cfg.enable_aec:
+        measured_delay = calibrate_aec_delay(
+            sample_rate=cfg.sample_rate,
+            mic_device_name=cfg.mic_device,
+            speaker_device_name=cfg.speaker_device,
+        )
         echo_canceller = WebRTCAcousticEchoCanceller(
             sample_rate=cfg.sample_rate,
-            delay_ms=cfg.aec_delay_ms,
+            delay_ms=measured_delay,
             enable_ns=cfg.aec_enable_ns,
             enable_agc=cfg.aec_enable_agc,
             ducking_threshold=cfg.aec_ducking_threshold,
-            ref_threshold=cfg.aec_ref_threshold
+            ref_threshold=cfg.aec_ref_threshold,
+            correlation_threshold=cfg.aec_correlation_threshold,
+            correlation_lag_search_ms=cfg.aec_correlation_lag_search_ms,
+            correlation_window_ms=cfg.aec_correlation_window_ms,
         )
 
     shared_state = {"last_sys_audio_active_time": 0.0}
@@ -582,6 +711,7 @@ def start_recording():
         out_queue=out_queue,
         echo_canceller=echo_canceller,
         shared_state=shared_state,
+        meeting_id=meeting_id
     )
     sys_worker = ChannelWorker(
         speaker_label="Speaker 2",
@@ -591,6 +721,7 @@ def start_recording():
         out_queue=out_queue,
         echo_canceller=echo_canceller,
         shared_state=shared_state,
+        meeting_id=meeting_id
     )
     
     # Reset stats
@@ -610,7 +741,7 @@ def start_recording():
     return {"status": "started"}
 
 def reprocess_recording(mic_audio, sys_audio, cfg, mic_engine, sys_engine):
-    import webrtcvad
+    from audio.vad_segmenter import SileroVAD
     from pipeline.channel_worker import stt_lock
     from pipeline.transcript_normalizer import clean_text, is_whisper_hallucination
     
@@ -629,7 +760,7 @@ def reprocess_recording(mic_audio, sys_audio, cfg, mic_engine, sys_engine):
         if len(audio_array) == 0:
             return []
             
-        vad = webrtcvad.Vad(cfg.vad_aggressiveness)
+        vad = SileroVAD()
         # Use a larger silence hangover (800ms) for post-processing to group continuous speech
         post_hangover_ms = 800
         hangover_frames = max(1, post_hangover_ms // cfg.frame_ms)
@@ -639,6 +770,9 @@ def reprocess_recording(mic_audio, sys_audio, cfg, mic_engine, sys_engine):
         max_segment_frames = int(post_max_segment_s * 1000 / cfg.frame_ms)
         
         speech_frames = []
+        speech_probabilities = []
+        preroll_frames = max(1, 300 // cfg.frame_ms)
+        preroll_buffer = []
         silence_run = 0
         speech_start_ts = None
         
@@ -652,10 +786,8 @@ def reprocess_recording(mic_audio, sys_audio, cfg, mic_engine, sys_engine):
                 
             rms = np.sqrt(np.mean(chunk**2)) if len(chunk) > 0 else 0.0
             
-            clipped = np.clip(chunk, -1.0, 1.0)
-            pcm_bytes = (clipped * 32767).astype(np.int16).tobytes()
-            
-            is_speech = vad.is_speech(pcm_bytes, cfg.sample_rate)
+            is_speech = vad.is_speech(chunk, cfg.vad_threshold)
+            current_prob = vad.last_prob
             
             # Dynamic threshold masking for microphone channel to suppress room echo leakage
             current_rms_threshold = 0.012 if is_mic else 0.008
@@ -667,30 +799,80 @@ def reprocess_recording(mic_audio, sys_audio, cfg, mic_engine, sys_engine):
                     
             if rms < current_rms_threshold:
                 is_speech = False
+                current_prob = 0.0
                 
             if is_speech:
                 if not speech_frames:
-                    speech_start_ts = t_offset
+                    # Prepend pre-roll buffer to keep the word onset
+                    speech_start_ts = t_offset - len(preroll_buffer) * (cfg.frame_ms / 1000.0)
+                    speech_frames = list(preroll_buffer)
+                    speech_probabilities = [0.0] * len(preroll_buffer)
+                    preroll_buffer = []
                 speech_frames.append(chunk)
+                speech_probabilities.append(current_prob)
                 silence_run = 0
             elif speech_frames:
                 speech_frames.append(chunk)
+                speech_probabilities.append(current_prob)
                 silence_run += 1
+            else:
+                preroll_buffer.append(chunk)
+                if len(preroll_buffer) > preroll_frames:
+                    preroll_buffer.pop(0)
                 
             hit_hangover = speech_frames and silence_run >= hangover_frames
             hit_max_len = (len(speech_frames) >= max_segment_frames and not is_speech) or (len(speech_frames) >= int(max_segment_frames * 1.5))
             
             if speech_frames and (hit_hangover or hit_max_len):
-                if len(speech_frames) - silence_run >= min_speech_frames:
-                    audio = np.concatenate(speech_frames).astype(np.float32)
+                is_hard_cut = (not hit_hangover) and (len(speech_frames) >= int(max_segment_frames * 1.5))
+                
+                if is_hard_cut:
+                    lookback = min(15, len(speech_probabilities) - 5)
+                    if lookback > 0:
+                        search_start = len(speech_probabilities) - 5 - lookback
+                        search_end = len(speech_probabilities) - 5
+                        min_rel_idx = int(np.argmin(speech_probabilities[search_start:search_end]))
+                        cut_idx = search_start + min_rel_idx
+                        
+                        audio_frames = speech_frames[:cut_idx + 1]
+                        carryover_frames = speech_frames[cut_idx + 1:]
+                        carryover_probabilities = speech_probabilities[cut_idx + 1:]
+                    else:
+                        audio_frames = speech_frames
+                        carryover_frames = []
+                        carryover_probabilities = []
+                else:
+                    # Strip trailing silence frames, leaving a comfortable 150ms cushion for word decay
+                    cushion_frames = max(1, 150 // cfg.frame_ms)
+                    strip_count = max(0, silence_run - cushion_frames)
+                    if strip_count > 0 and len(speech_frames) > strip_count:
+                        audio_frames = speech_frames[:-strip_count]
+                    else:
+                        audio_frames = speech_frames
+                    carryover_frames = []
+                    carryover_probabilities = []
+
+                if len(audio_frames) - silence_run >= min_speech_frames:
+                    audio = np.concatenate(audio_frames).astype(np.float32)
+                    segment_duration = len(audio_frames) * (cfg.frame_ms / 1000.0)
                     segments.append({
                         "audio": audio,
                         "start_ts": speech_start_ts,
-                        "end_ts": t_offset
+                        "end_ts": speech_start_ts + segment_duration
                     })
-                speech_frames = []
-                silence_run = 0
-                speech_start_ts = None
+                    
+                if is_hard_cut:
+                    speech_frames = list(carryover_frames)
+                    speech_probabilities = list(carryover_probabilities)
+                    silence_run = 0
+                    speech_start_ts = t_offset - len(speech_frames) * (cfg.frame_ms / 1000.0)
+                    preroll_buffer = []
+                else:
+                    preroll_buffer = speech_frames[-preroll_frames:] if len(speech_frames) >= preroll_frames else list(speech_frames)
+                    speech_frames = []
+                    speech_probabilities = []
+                    silence_run = 0
+                    speech_start_ts = None
                 
             t_offset += cfg.frame_ms / 1000.0
             
@@ -722,12 +904,18 @@ def reprocess_recording(mic_audio, sys_audio, cfg, mic_engine, sys_engine):
         try:
             # Segment RMS check
             rms = np.sqrt(np.mean(seg["audio"]**2)) if len(seg["audio"]) > 0 else 0.0
-            if rms < 0.012:
+            if rms < 0.005:
                 print(f"Post-processing: skipping quiet mic segment (RMS: {rms:.4f})")
                 continue
 
-            with stt_lock:
+            acquired = stt_lock.acquire(timeout=30.0)
+            if not acquired:
+                print("CRITICAL: STT lock acquisition timed out during post-processing mic segment — GPU thread stuck")
+                continue
+            try:
                 text = clean_text(mic_engine.transcribe(seg["audio"], cfg.sample_rate))
+            finally:
+                stt_lock.release()
             if text:
                 if is_whisper_hallucination(text, rms):
                     print(f"Post-processing: skipping suspected Whisper hallucination '{text}' (RMS: {rms:.4f}, channel: Speaker 1)")
@@ -747,12 +935,18 @@ def reprocess_recording(mic_audio, sys_audio, cfg, mic_engine, sys_engine):
         try:
             # Segment RMS check
             rms = np.sqrt(np.mean(seg["audio"]**2)) if len(seg["audio"]) > 0 else 0.0
-            if rms < 0.008:
+            if rms < 0.003:
                 print(f"Post-processing: skipping quiet sys segment (RMS: {rms:.4f})")
                 continue
 
-            with stt_lock:
+            acquired = stt_lock.acquire(timeout=30.0)
+            if not acquired:
+                print("CRITICAL: STT lock acquisition timed out during post-processing sys segment — GPU thread stuck")
+                continue
+            try:
                 text = clean_text(sys_engine.transcribe(seg["audio"], cfg.sample_rate))
+            finally:
+                stt_lock.release()
             if text:
                 if is_whisper_hallucination(text, rms):
                     print(f"Post-processing: skipping suspected Whisper hallucination '{text}' (RMS: {rms:.4f}, channel: Speaker 2)")
@@ -822,12 +1016,20 @@ def stop_recording(request: StopRequest = None):
     }
     
     # Save the meeting session if we transcribing anything
-    meeting_id = None
+    global current_meeting_id
+    meeting_id = current_meeting_id
     do_not_save_flag = request.do_not_save if request is not None else False
-    if not do_not_save_flag and (current_session_segments or stats["duration"] > 0):
+    if not do_not_save_flag and meeting_id:
         now = datetime.datetime.now()
-        meeting_id = f"meeting_{now.strftime('%Y%m%d_%H%M%S')}"
         meeting_title = f"Meeting at {now.strftime('%I:%M %p')}"
+        
+        # Delete active_meeting.json as this session is now finalized
+        active_meeting_file = os.path.join(cfg.history_dir, "active_meeting.json")
+        if os.path.exists(active_meeting_file):
+            try:
+                os.remove(active_meeting_file)
+            except Exception as e:
+                print(f"Failed to remove active_meeting.json: {e}")
         
         # 1. Combine audio histories and save as stereo WAV
         import scipy.io.wavfile as wav
@@ -835,6 +1037,13 @@ def stop_recording(request: StopRequest = None):
         sys_audio = np.concatenate(sys_worker.audio_history) if (sys_worker and sys_worker.audio_history) else np.empty(0, dtype=np.float32)
         
         max_len = max(len(mic_audio), len(sys_audio))
+        # True wall-clock length of the saved recording, derived from the actual
+        # audio samples (not the sum of live-transcribed segment durations below,
+        # which excludes silence and undercounts the real file length - that
+        # mismatch was causing the meeting JSON to report a much shorter
+        # "duration" than the wav file actually is, e.g. 8.8s reported vs a
+        # 20.3s real file).
+        recorded_duration = max_len / cfg.sample_rate if max_len > 0 else 0.0
         if max_len > 0:
             if len(mic_audio) < max_len:
                 mic_audio = np.pad(mic_audio, (0, max_len - len(mic_audio)))
@@ -862,7 +1071,7 @@ def stop_recording(request: StopRequest = None):
             "id": meeting_id,
             "title": meeting_title,
             "date": now.isoformat(),
-            "duration": stats["duration"],
+            "duration": recorded_duration,
             "segments": reprocessed_segments,
             "stats": stats
         }
@@ -888,6 +1097,17 @@ def get_status():
             model_name = m["name"]
             break
             
+    active_meeting_file = os.path.join(cfg.history_dir, "active_meeting.json")
+    has_recoverable = False
+    recoverable_data = None
+    if os.path.exists(active_meeting_file):
+        try:
+            with open(active_meeting_file, "r", encoding="utf-8") as f:
+                recoverable_data = json.load(f)
+                has_recoverable = True
+        except Exception:
+            pass
+
     return {
         "recording": recording_active,
         "device": mic_engine.device if mic_engine else "Not Loaded",
@@ -896,8 +1116,112 @@ def get_status():
         "loading": is_loading_engine,
         "error": engine_load_error,
         "stt_language": cfg.stt_language,
-        "stt_initial_prompt": cfg.stt_initial_prompt
+        "stt_initial_prompt": cfg.stt_initial_prompt,
+        "stt_hotwords": cfg.stt_hotwords,
+        "stt_prefix": cfg.stt_prefix,
+        "has_recoverable": has_recoverable,
+        "recoverable_meeting": recoverable_data
     }
+
+@app.post("/api/recover")
+def recover_meeting():
+    global mic_worker, sys_worker, recording_active, out_queue
+    global current_session_segments, current_session_start_time, current_meeting_id
+    
+    if recording_active:
+        return {"status": "already_recording"}
+        
+    active_meeting_file = os.path.join(cfg.history_dir, "active_meeting.json")
+    if not os.path.exists(active_meeting_file):
+        raise HTTPException(status_code=400, detail="No active meeting to recover.")
+        
+    try:
+        with open(active_meeting_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        
+        meeting_id = data["id"]
+        
+        # Restore state
+        current_meeting_id = meeting_id
+        current_session_segments = data.get("segments", [])
+        try:
+            current_session_start_time = datetime.datetime.fromisoformat(data["date"])
+        except Exception:
+            current_session_start_time = datetime.datetime.now()
+            
+        # Clear the queue
+        while not out_queue.empty():
+            try:
+                out_queue.get_nowait()
+            except queue.Empty:
+                break
+                
+        # Re-initialize workers
+        echo_canceller = None
+        if cfg.enable_aec:
+            echo_canceller = WebRTCAcousticEchoCanceller(
+                sample_rate=cfg.sample_rate,
+                delay_ms=cfg.aec_delay_ms,
+                enable_ns=cfg.aec_enable_ns,
+                enable_agc=cfg.aec_enable_agc,
+                ducking_threshold=cfg.aec_ducking_threshold,
+                ref_threshold=cfg.aec_ref_threshold,
+                correlation_threshold=cfg.aec_correlation_threshold,
+                correlation_lag_search_ms=cfg.aec_correlation_lag_search_ms,
+            )
+            
+        shared_state = {"last_sys_audio_active_time": 0.0}
+        
+        mic_worker = ChannelWorker(
+            speaker_label="Speaker 1",
+            capture=MicCapture(cfg.sample_rate, cfg.frame_ms, cfg.mic_device),
+            segmenter=build_segmenter(cfg),
+            engine=mic_engine,
+            out_queue=out_queue,
+            echo_canceller=echo_canceller,
+            shared_state=shared_state,
+            meeting_id=meeting_id
+        )
+        sys_worker = ChannelWorker(
+            speaker_label="Speaker 2",
+            capture=SystemAudioCapture(cfg.sample_rate, cfg.frame_ms, cfg.speaker_device),
+            segmenter=build_segmenter(cfg),
+            engine=sys_engine,
+            out_queue=out_queue,
+            echo_canceller=echo_canceller,
+            shared_state=shared_state,
+            meeting_id=meeting_id
+        )
+        
+        # Reset stats
+        mic_engine.total_segments = 0
+        mic_engine.total_audio_duration = 0.0
+        mic_engine.total_transcribe_time = 0.0
+        
+        sys_engine.total_segments = 0
+        sys_engine.total_audio_duration = 0.0
+        sys_engine.total_transcribe_time = 0.0
+        
+        # Start workers
+        mic_worker.start()
+        sys_worker.start()
+        recording_active = True
+        
+        return {"status": "recovered", "meeting_id": meeting_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to recover session: {e}")
+
+@app.post("/api/discard")
+def discard_meeting():
+    global cfg
+    active_meeting_file = os.path.join(cfg.history_dir, "active_meeting.json")
+    if os.path.exists(active_meeting_file):
+        try:
+            os.remove(active_meeting_file)
+            return {"status": "discarded"}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to delete active meeting: {e}")
+    return {"status": "no_active_meeting"}
 
 @app.get("/api/hardware-recommendation")
 def get_recommendation():
@@ -917,7 +1241,9 @@ def get_config():
         "mic_device": cfg.mic_device,
         "speaker_device": cfg.speaker_device,
         "stt_language": cfg.stt_language,
-        "stt_initial_prompt": cfg.stt_initial_prompt
+        "stt_initial_prompt": cfg.stt_initial_prompt,
+        "stt_hotwords": cfg.stt_hotwords,
+        "stt_prefix": cfg.stt_prefix
     }
 
 @app.post("/api/config")
@@ -943,6 +1269,18 @@ def update_config(data: dict = Body(...)):
             mic_engine.initial_prompt = cfg.stt_initial_prompt
         if sys_engine and hasattr(sys_engine, "initial_prompt"):
             sys_engine.initial_prompt = cfg.stt_initial_prompt
+    if "stt_hotwords" in data:
+        cfg.stt_hotwords = data.get("stt_hotwords")
+        if mic_engine and hasattr(mic_engine, "hotwords"):
+            mic_engine.hotwords = cfg.stt_hotwords
+        if sys_engine and hasattr(sys_engine, "hotwords"):
+            sys_engine.hotwords = cfg.stt_hotwords
+    if "stt_prefix" in data:
+        cfg.stt_prefix = data.get("stt_prefix")
+        if mic_engine and hasattr(mic_engine, "prefix"):
+            mic_engine.prefix = cfg.stt_prefix
+        if sys_engine and hasattr(sys_engine, "prefix"):
+            sys_engine.prefix = cfg.stt_prefix
         
     model_size = data.get("model_size")
     if model_size and model_size != cfg.model_size:
@@ -1044,6 +1382,18 @@ def download_model(data: dict = Body(...)):
     threading.Thread(target=download_model_worker, args=(model_id,), daemon=True).start()
     return {"status": "started"}
 
+@app.post("/api/models/cancel")
+def cancel_model(data: dict = Body(...)):
+    global downloading_models, cancelled_downloads
+    model_id = data.get("model_id")
+    if not model_id:
+        raise HTTPException(status_code=400, detail="model_id is required.")
+        
+    if model_id in downloading_models:
+        cancelled_downloads.add(model_id)
+        return {"status": "cancelling"}
+    return {"status": "not_downloading"}
+
 @app.post("/api/models/delete")
 def delete_model(data: dict = Body(...)):
     global downloading_models
@@ -1114,22 +1464,26 @@ async def queue_listener():
                 text = event.text
                 start_ts = event.start_ts
                 end_ts = event.end_ts
+                is_final = getattr(event, "is_final", True)
                 
                 # Check for post-transcription semantic deduplication safety net
-                if is_echo_duplicate(text, start_ts, end_ts, speaker, current_session_segments):
-                    print(f"[AEC Safety Net] Suppressed duplicate mic transcript event: '{text}'")
-                    continue
-
+                if is_final:
+                    if is_echo_duplicate(text, start_ts, end_ts, speaker, current_session_segments):
+                        print(f"[AEC Safety Net] Suppressed duplicate mic transcript event: '{text}'")
+                        continue
+ 
                 # Prepare segment for broadcast
                 segment_data = {
                     "speaker": speaker,
                     "start_ts": start_ts,
                     "end_ts": end_ts,
-                    "text": text
+                    "text": text,
+                    "is_final": is_final
                 }
                 
-                # Keep in active session segment store
-                current_session_segments.append(segment_data)
+                # Keep in active session segment store if final
+                if is_final:
+                    current_session_segments.append(segment_data)
                 
                 # Broadcast to all websocket clients
                 for ws in list(active_sockets):

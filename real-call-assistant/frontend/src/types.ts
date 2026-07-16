@@ -3,6 +3,7 @@ export interface Segment {
   start_ts: number;
   end_ts: number;
   text: string;
+  is_final?: boolean;
 }
 
 export interface ChannelStats {

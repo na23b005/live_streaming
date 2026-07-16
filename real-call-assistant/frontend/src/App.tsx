@@ -20,6 +20,7 @@ function AppContent() {
   const { settings, updateSetting } = useSettings();
   const [searchQuery, setSearchQuery] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const [recoverableMeeting, setRecoverableMeeting] = useState<any>(null);
 
   // Initialize and check status
   const checkStatus = async () => {
@@ -31,33 +32,22 @@ function AppContent() {
         setBackendLoading(!!data.loading);
         if (data.recording) {
           setView('live-transcribing');
+          setRecoverableMeeting(null);
+        } else if (data.has_recoverable && data.recoverable_meeting) {
+          setRecoverableMeeting(data.recoverable_meeting);
+        } else {
+          setRecoverableMeeting(null);
         }
 
-        // Auto-sync model and STT settings on startup, unless backend is running 'remote' (we preserve remote)
-        const isRemoteModel = data.model && data.model.startsWith('remote/');
-        const modelNeedsSync = settings.sttModel && data.model !== settings.sttModel && !isRemoteModel;
-        
-        const needsSync = modelNeedsSync || 
-          data.stt_language !== settings.sttLanguage || 
-          data.stt_initial_prompt !== settings.sttInitialPrompt;
-
-        if (needsSync && !data.recording && !data.loading && !data.error) {
-          try {
-            await fetch(`${API_BASE}/api/config`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ 
-                model_size: isRemoteModel ? data.model : settings.sttModel,
-                stt_language: settings.sttLanguage,
-                stt_initial_prompt: settings.sttInitialPrompt
-              })
-            });
-            if (isRemoteModel && settings.sttModel !== data.model) {
-              updateSetting('sttModel', data.model);
-            }
-          } catch (err) {
-            console.error('Failed to sync settings with backend:', err);
-          }
+        // Auto-sync frontend settings to match backend's active config on startup
+        if (data.model && settings.sttModel !== data.model) {
+          updateSetting('sttModel', data.model);
+        }
+        if (data.stt_language !== undefined && settings.sttLanguage !== data.stt_language) {
+          updateSetting('sttLanguage', data.stt_language);
+        }
+        if (data.stt_initial_prompt !== undefined && settings.sttInitialPrompt !== data.stt_initial_prompt) {
+          updateSetting('sttInitialPrompt', data.stt_initial_prompt);
         }
       } else {
         setBackendOnline(false);
@@ -107,6 +97,36 @@ function AppContent() {
     } catch (e) {
       console.error('Error fetching meeting details:', e);
       alert('Error fetching meeting details.');
+    }
+  };
+
+  const handleRecoverMeeting = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/recover`, { method: 'POST' });
+      if (res.ok) {
+        setView('live-transcribing');
+        setRecoverableMeeting(null);
+      } else {
+        alert('Could not recover the active meeting.');
+      }
+    } catch (e) {
+      console.error('Error recovering meeting:', e);
+      alert('Error recovering meeting.');
+    }
+  };
+
+  const handleDiscardMeeting = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/discard`, { method: 'POST' });
+      if (res.ok) {
+        setRecoverableMeeting(null);
+        fetchHistory();
+      } else {
+        alert('Could not discard the active meeting.');
+      }
+    } catch (e) {
+      console.error('Error discarding meeting:', e);
+      alert('Error discarding meeting.');
     }
   };
 
@@ -265,6 +285,129 @@ function AppContent() {
           `}</style>
           <h2 style={{ fontSize: '1.25rem', fontWeight: 600, margin: 0, marginBottom: '0.4rem' }}>Reprocessing Transcript</h2>
           <p style={{ fontSize: '0.9rem', color: '#9ca3af', margin: 0 }}>Aligning diarization & running high-accuracy STT refinement...</p>
+        </div>
+      )}
+
+      {recoverableMeeting && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100vw',
+          height: '100vh',
+          background: 'rgba(8, 8, 10, 0.75)',
+          backdropFilter: 'blur(16px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 10000,
+          fontFamily: 'Outfit, Inter, sans-serif'
+        }}>
+          <div style={{
+            background: 'rgba(17, 17, 21, 0.9)',
+            border: '1px solid rgba(255, 255, 255, 0.08)',
+            boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
+            borderRadius: '16px',
+            padding: '2.5rem',
+            width: '100%',
+            maxWidth: '480px',
+            textAlign: 'center',
+            color: '#f3f4f6'
+          }}>
+            <div style={{
+              width: '56px',
+              height: '56px',
+              borderRadius: '12px',
+              background: 'rgba(99, 102, 241, 0.1)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              margin: '0 auto 1.5rem auto',
+              color: '#6366f1'
+            }}>
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+              </svg>
+            </div>
+            
+            <h2 style={{
+              fontSize: '1.5rem',
+              fontWeight: 600,
+              margin: '0 0 0.75rem 0',
+              color: '#ffffff',
+              letterSpacing: '-0.025em'
+            }}>
+              Recover Active Session?
+            </h2>
+            
+            <p style={{
+              fontSize: '0.925rem',
+              color: '#9ca3af',
+              margin: '0 0 2rem 0',
+              lineHeight: '1.5'
+            }}>
+              We found an unsaved meeting session from <strong>{new Date(recoverableMeeting.date).toLocaleString()}</strong> containing <strong>{recoverableMeeting.segments?.length || 0} transcript segments</strong>. Would you like to recover it?
+            </p>
+            
+            <div style={{
+              display: 'flex',
+              gap: '12px',
+              justifyContent: 'center'
+            }}>
+              <button 
+                onClick={handleDiscardMeeting}
+                style={{
+                  flex: 1,
+                  background: 'rgba(239, 68, 68, 0.1)',
+                  color: '#ef4444',
+                  border: '1px solid rgba(239, 68, 68, 0.2)',
+                  borderRadius: '10px',
+                  padding: '0.75rem 1.25rem',
+                  fontSize: '0.9rem',
+                  fontWeight: 500,
+                  cursor: 'pointer',
+                  transition: 'all 0.2s'
+                }}
+                onMouseOver={(e) => {
+                  e.currentTarget.style.background = 'rgba(239, 68, 68, 0.15)';
+                  e.currentTarget.style.border = '1px solid rgba(239, 68, 68, 0.3)';
+                }}
+                onMouseOut={(e) => {
+                  e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)';
+                  e.currentTarget.style.border = '1px solid rgba(239, 68, 68, 0.2)';
+                }}
+              >
+                Discard Session
+              </button>
+              
+              <button 
+                onClick={handleRecoverMeeting}
+                style={{
+                  flex: 1,
+                  background: '#6366f1',
+                  color: '#ffffff',
+                  border: 'none',
+                  borderRadius: '10px',
+                  padding: '0.75rem 1.25rem',
+                  fontSize: '0.9rem',
+                  fontWeight: 500,
+                  cursor: 'pointer',
+                  boxShadow: '0 4px 12px rgba(99, 102, 241, 0.3)',
+                  transition: 'all 0.2s'
+                }}
+                onMouseOver={(e) => {
+                  e.currentTarget.style.background = '#4f46e5';
+                  e.currentTarget.style.boxShadow = '0 6px 16px rgba(99, 102, 241, 0.4)';
+                }}
+                onMouseOut={(e) => {
+                  e.currentTarget.style.background = '#6366f1';
+                  e.currentTarget.style.boxShadow = '0 4px 12px rgba(99, 102, 241, 0.3)';
+                }}
+              >
+                Recover Session
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

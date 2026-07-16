@@ -40,22 +40,30 @@ warnings.filterwarnings("ignore", message=".*data discontinuity in recording.*")
 @dataclass
 class Config:
     # --- Audio ---
-    sample_rate: int = 16000           # required by Whisper and webrtcvad
-    frame_ms: int = 30                 # VAD frame size, webrtcvad only accepts 10/20/30ms
+    sample_rate: int = 16000           # required by Whisper
+    frame_ms: int = 32                 # VAD frame size, Silero VAD requires 32ms (512 samples)
     mic_device: Optional[str] = None   # None = OS default microphone
     speaker_device: Optional[str] = None  # None = OS default output device (loopback source)
 
     # --- AEC (Acoustic Echo Cancellation) ---
     enable_aec: bool = True
     aec_delay_ms: int = 80             # acoustic render-to-capture latency in ms
-    aec_enable_ns: bool = False
+    aec_enable_ns: bool = True
     aec_enable_agc: bool = False
     aec_ducking_threshold: float = 0.45 # mic_rms / ref_rms ratio below which we duck
     aec_ref_threshold: float = 0.01     # speaker RMS above which we consider speaker active
+    # Correlation-based ducking (in addition to the ratio+cap ducking above): mic audio
+    # whose waveform correlates this strongly with the concurrent reference is treated as
+    # echo and zeroed, regardless of how loud it is. Needed because the ratio+cap check
+    # never fires above mic_rms=0.05, which a real leak without headphones easily exceeds.
+    aec_correlation_threshold: float = 0.30
+    aec_correlation_lag_search_ms: int = 60
+    aec_correlation_window_ms: int = 32
 
 
     # --- VAD / endpointing ---
-    vad_aggressiveness: int = 2        # 0-3, higher = more aggressive at filtering non-speech
+    vad_threshold: float = 0.5         # Silero speech probability threshold, 0.0 to 1.0
+    vad_aggressiveness: int = 2        # 0-3, unused / legacy for WebRTC VAD
     silence_hangover_ms: int = 500     # trailing silence required before a segment is closed
     min_speech_ms: int = 250           # ignore blips shorter than this (coughs, clicks)
     max_segment_s: float = 4.0         # hard limit for segment duration, cut only at silent boundaries
@@ -70,7 +78,9 @@ class Config:
     compute_type: str = "float"         # "float" for Moonshine, "int8" for Whisper, "remote" for Remote
     device: str = "dml"                # "dml" | "cpu" | "cuda" | "remote"
     stt_language: str = os.getenv("STT_LANGUAGE", "en")
-    stt_initial_prompt: str = os.getenv("STT_INITIAL_PROMPT", "Indian English accent, conversation, terminology.")
+    stt_initial_prompt: str = os.getenv("STT_INITIAL_PROMPT", "Zee sales call, Indian English accent with Hindi code-switching.")
+    stt_hotwords: str = os.getenv("STT_HOTWORDS", "Zee TV, WION, Zee News, Zee Business, ZEE5, &TV, Zee Cinema, Zee Music, Zee Marathi, Zee Bangla, Zee Telugu, Zee Kannada, Zee Tamil, Zee Punjabi, DNA India, &pictures, rate card, GRP, TRP, BARC, DTH, SVOD, AVOD, FCT, CPRP, OTT, Essel Group, Zee Studios")
+    stt_prefix: str = os.getenv("STT_PREFIX", "")
     
     # Model download folder inside backend
     model_download_root: str = str(MODELS_DIR)

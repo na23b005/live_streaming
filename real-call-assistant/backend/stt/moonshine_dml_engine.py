@@ -58,9 +58,18 @@ class MoonshineDirectMLEngine(STTEngine):
         self.total_segments = 0
         self.total_audio_duration = 0.0
 
-    def transcribe(self, audio: np.ndarray, samplerate: int) -> str:
+        # Warm up model to compile kernels and warm caches (pre-empt first-utterance latency)
+        dummy_audio = np.zeros(16000, dtype=np.float32)  # 1 second of silence
+        _ = self.transcribe(dummy_audio, 16000)
+
+    def transcribe(self, audio: np.ndarray, samplerate: int, meeting_id: str | None = None) -> str:
         if samplerate != 16000:
             raise ValueError("Moonshine expects 16kHz audio.")
+            
+        # Root mean square (RMS) threshold to filter out silence/ambient hum
+        rms = np.sqrt(np.mean(audio**2)) if len(audio) > 0 else 0.0
+        if rms < 0.006:
+            return ""
             
         start_t = time.perf_counter()
         

@@ -1,0 +1,18 @@
+# Ignore Python virtual environments
+venv/
+
+# Ignore local downloaded ML models
+models/
+real-call-assistant/backend/models/
+
+# Ignore local audio history and transcripts
+real-call-assistant/backend/history/
+real-call-assistant/backend/transcript.log
+
+# Ignore OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+run.py

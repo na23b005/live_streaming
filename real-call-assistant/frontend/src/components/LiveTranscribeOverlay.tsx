@@ -16,6 +16,7 @@ export const LiveTranscribeOverlay: React.FC<LiveTranscribeOverlayProps> = ({
   const [segments, setSegments] = useState<Segment[]>([]);
   const [suggestionsText, setSuggestionsText] = useState('Ask suggestions');
   const [followUpText, setFollowUpText] = useState('Follow up questions');
+  const [showStopConfirm, setShowStopConfirm] = useState(false);
 
   const socketRef = useRef<WebSocket | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -76,7 +77,20 @@ export const LiveTranscribeOverlay: React.FC<LiveTranscribeOverlayProps> = ({
     socket.onmessage = (event) => {
       try {
         const segment: Segment = JSON.parse(event.data);
-        setSegments((prev) => [...prev, segment]);
+        setSegments((prev) => {
+          const existsIdx = prev.findIndex((s) => s.start_ts === segment.start_ts && s.speaker === segment.speaker);
+          if (existsIdx !== -1) {
+            const next = [...prev];
+            if (segment.text === "") {
+              next.splice(existsIdx, 1);
+            } else {
+              next[existsIdx] = segment;
+            }
+            return next;
+          } else {
+            return segment.text === "" ? prev : [...prev, segment];
+          }
+        });
       } catch (err) {
         console.error('Failed to parse websocket message:', err);
       }
@@ -213,7 +227,7 @@ export const LiveTranscribeOverlay: React.FC<LiveTranscribeOverlayProps> = ({
 
               <button
                 className="btn-nexus-stop"
-                onClick={onStop}
+                onClick={() => setShowStopConfirm(true)}
                 title="Stop Session"
               >
                 <Square size={10} fill="currentColor" stroke="none" />
@@ -233,9 +247,14 @@ export const LiveTranscribeOverlay: React.FC<LiveTranscribeOverlayProps> = ({
               ) : (
                 segments.map((segment, index) => {
                   return (
-                    <div key={index} className="transcript-card">
+                    <div key={index} className={`transcript-card ${segment.is_final === false ? 'partial' : ''}`}>
                       <div className="transcript-card-header">
-                        <span className="speaker-name">{segment.speaker}</span>
+                        <span className="speaker-name">
+                          {segment.speaker}
+                          {segment.is_final === false && (
+                            <span className="typing-dot-indicator">...</span>
+                          )}
+                        </span>
                         <span className="timestamp">{formatTimestamp(segment.start_ts)}</span>
                       </div>
                       <div className="transcript-card-body">{segment.text}</div>
@@ -264,6 +283,87 @@ export const LiveTranscribeOverlay: React.FC<LiveTranscribeOverlayProps> = ({
             </button>
           </div>
         </>
+      )}
+
+      {showStopConfirm && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          background: 'rgba(8, 8, 10, 0.75)',
+          backdropFilter: 'blur(12px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 99999,
+          borderRadius: '12px'
+        }}>
+          <div style={{
+            background: 'rgba(20, 20, 25, 0.95)',
+            border: '1px solid rgba(255, 255, 255, 0.08)',
+            boxShadow: '0 20px 40px -15px rgba(0, 0, 0, 0.5)',
+            borderRadius: '14px',
+            padding: '1.5rem',
+            width: '90%',
+            maxWidth: '300px',
+            textAlign: 'center',
+            color: '#f3f4f6',
+            fontFamily: 'Inter, sans-serif'
+          }}>
+            <h3 style={{
+              fontSize: '1.1rem',
+              fontWeight: 600,
+              margin: '0 0 0.5rem 0',
+              color: '#ffffff'
+            }}>Stop Session?</h3>
+            <p style={{
+              fontSize: '0.825rem',
+              color: '#9ca3af',
+              margin: '0 0 1.25rem 0',
+              lineHeight: '1.4'
+            }}>Are you sure you want to end this recording and process the final transcript?</p>
+            <div style={{
+              display: 'flex',
+              gap: '10px',
+              justifyContent: 'center'
+            }}>
+              <button 
+                onClick={() => setShowStopConfirm(false)}
+                style={{
+                  flex: 1,
+                  background: 'rgba(255, 255, 255, 0.05)',
+                  color: '#e5e7eb',
+                  border: '1px solid rgba(255, 255, 255, 0.08)',
+                  borderRadius: '8px',
+                  padding: '0.5rem',
+                  fontSize: '0.85rem',
+                  fontWeight: 500,
+                  cursor: 'pointer'
+                }}
+              >
+                Cancel
+              </button>
+              <button 
+                onClick={onStop}
+                style={{
+                  flex: 1,
+                  background: '#ef4444',
+                  color: '#ffffff',
+                  border: 'none',
+                  borderRadius: '8px',
+                  padding: '0.5rem',
+                  fontSize: '0.85rem',
+                  fontWeight: 500,
+                  cursor: 'pointer'
+                }}
+              >
+                Stop
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
