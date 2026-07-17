@@ -25,7 +25,7 @@ class NemotronRemoteEngine(STTEngine):
                 self.remote_url += "/transcribe"
                 
         # Hardcode language as en-GB for Indian English
-        self.language = "en-GB"
+        self.language = "en-US"
             
         self.device = f"Remote GPU Nemotron ({self.remote_url})"
         self.total_transcribe_time = 0.0

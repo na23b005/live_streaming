@@ -95,6 +95,7 @@ class ChannelWorker:
         self.meeting_id = meeting_id
         self.default_rms_threshold = getattr(segmenter, "rms_threshold", 0.008)
         self.last_final_text = ""
+        self.last_final_ts = 0.0
         self.processed_queue = queue.Queue(maxsize=100)
         self.audio_history = []
         self._segments: "queue.Queue[SpeechSegment]" = queue.Queue(maxsize=100)
@@ -220,6 +221,7 @@ class ChannelWorker:
             try:
                 timeout = 0.5 if not self._stop.is_set() else 0.05
                 segment = self._segments.get(timeout=timeout)
+                self.last_final_ts = segment.start_ts
             except queue.Empty:
                 if self._stop.is_set():
                     break
@@ -419,6 +421,8 @@ class ChannelWorker:
         last_raw_text = ""
         last_emitted_text = ""
         last_speculative_audio_len = 0
+        last_start_ts = 0.0
+        last_end_ts = 0.0
         
         while not self._stop.is_set():
             time.sleep(1.5)
@@ -431,10 +435,24 @@ class ChannelWorker:
             # Peek active speech segment
             segment = self.segmenter.peek_active_segment()
             if segment is None:
-                # If there's no active speech, reset speculation state
+                # If there's no active speech but we have pending speculative text, flush it fully
+                if last_raw_text and last_raw_text != last_emitted_text and last_start_ts > self.last_final_ts:
+                    self._put_queue(
+                        self.out_queue,
+                        TranscriptEvent(
+                            speaker=self.speaker_label,
+                            start_ts=last_start_ts,
+                            end_ts=last_end_ts,
+                            text=last_raw_text,
+                            is_final=False
+                        )
+                    )
+                # Reset speculation state
                 last_raw_text = ""
                 last_emitted_text = ""
                 last_speculative_audio_len = 0
+                last_start_ts = 0.0
+                last_end_ts = 0.0
                 continue
                 
             # Skip if we already processed this exact audio length (or extremely close) to save CPU/GPU cycles
@@ -464,11 +482,15 @@ class ChannelWorker:
                 # First pass: seed the last raw text and wait for consensus
                 if not last_raw_text:
                     last_raw_text = text
+                    last_start_ts = segment.start_ts
+                    last_end_ts = segment.end_ts
                     continue
                     
                 # Find the Longest Common Prefix (LCP) between the previous pass and this pass
                 agreed_text = longest_common_prefix(last_raw_text, text)
                 last_raw_text = text
+                last_start_ts = segment.start_ts
+                last_end_ts = segment.end_ts
                 
                 if agreed_text:
                     # Strip to last word boundary to avoid cutting off words mid-stream

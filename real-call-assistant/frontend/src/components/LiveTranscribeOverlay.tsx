@@ -84,7 +84,15 @@ export const LiveTranscribeOverlay: React.FC<LiveTranscribeOverlayProps> = ({
             if (segment.text === "") {
               next.splice(existsIdx, 1);
             } else {
-              next[existsIdx] = segment;
+              const existing = prev[existsIdx];
+              if (existing.is_final && !segment.is_final) {
+                next[existsIdx] = {
+                  ...existing,
+                  text: existing.text || segment.text
+                };
+              } else {
+                next[existsIdx] = segment;
+              }
             }
             return next;
           } else {

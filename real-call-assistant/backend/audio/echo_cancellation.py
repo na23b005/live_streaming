@@ -79,6 +79,10 @@ class WebRTCAcousticEchoCanceller:
         # Carryover buffers for WebRTC AEC frame alignment (10ms boundaries)
         self.mic_carryover = np.empty(0, dtype=np.float32)
         self.mic_carryover_time = None
+        
+        # Cleaned output carryover buffer to match VADSegmenter's frame size
+        self.cleaned_carryover = np.empty(0, dtype=np.float32)
+        self.cleaned_timestamp = None
 
     def push_reference(self, ref_chunk: np.ndarray, timestamp: float) -> None:
         """Pushes a chunk of speaker/loopback (reference) audio with its capture timestamp."""
@@ -147,13 +151,20 @@ class WebRTCAcousticEchoCanceller:
 
     def process_mic(self, mic_chunk: np.ndarray, mic_timestamp: float) -> tuple[np.ndarray, float]:
         """Aligns the mic chunk with reference history, applies carryover buffering for 10ms alignment,
-        and applies WebRTC AEC and ducking. Returns (cleaned_chunk, processed_timestamp).
+        applies WebRTC AEC and ducking, and ensures the returned chunk matches the input chunk's length.
         """
+        N = len(mic_chunk)
+        if N == 0:
+            return np.empty(0, dtype=np.float32), mic_timestamp
+
         with self.lock:
-            # 1. Append mic_chunk to our mic carryover buffer
+            # Initialize timestamps on first call
             if self.mic_carryover_time is None:
                 self.mic_carryover_time = mic_timestamp
-                
+            if self.cleaned_timestamp is None:
+                self.cleaned_timestamp = mic_timestamp
+
+            # 1. Append mic_chunk to our input mic carryover buffer
             self.mic_carryover = np.concatenate((self.mic_carryover, mic_chunk))
             
             # Determine how many full 10ms frames we have
@@ -162,7 +173,13 @@ class WebRTCAcousticEchoCanceller:
             process_len = num_frames * self.frame_samples
             
             if process_len == 0:
-                # Not enough samples for a 10ms frame; wait for next chunk
+                # Not enough samples for a 10ms frame; check if we can return any already-buffered cleaned samples
+                if len(self.cleaned_carryover) >= N:
+                    chunk_to_return = self.cleaned_carryover[:N]
+                    self.cleaned_carryover = self.cleaned_carryover[N:]
+                    ret_timestamp = self.cleaned_timestamp
+                    self.cleaned_timestamp += N / self.sample_rate
+                    return chunk_to_return, ret_timestamp
                 return np.empty(0, dtype=np.float32), mic_timestamp
                 
             # Extract the portion we will process
@@ -179,8 +196,15 @@ class WebRTCAcousticEchoCanceller:
             
             # Find corresponding reference audio from history
             if self.ref_start_time is None or len(self.all_ref_samples) == 0:
-                # No reference audio captured yet; return original mic chunk
-                return mic_to_process.copy(), processed_timestamp
+                # No reference audio captured yet; treat as clean pass-through
+                self.cleaned_carryover = np.concatenate((self.cleaned_carryover, mic_to_process))
+                if len(self.cleaned_carryover) >= N:
+                    chunk_to_return = self.cleaned_carryover[:N]
+                    self.cleaned_carryover = self.cleaned_carryover[N:]
+                    ret_timestamp = self.cleaned_timestamp
+                    self.cleaned_timestamp += N / self.sample_rate
+                    return chunk_to_return, ret_timestamp
+                return np.empty(0, dtype=np.float32), mic_timestamp
 
             target_time = processed_timestamp - self.delay_sec
             start_idx = int((target_time - self.ref_start_time) * self.sample_rate)
@@ -190,16 +214,19 @@ class WebRTCAcousticEchoCanceller:
             mic_rms = np.sqrt(np.mean(mic_to_process**2)) if len(mic_to_process) > 0 else 0.0
             max_ref_rms = max(self.ref_rms_history) if self.ref_rms_history else 0.0
 
-            # If system speaker is active
-            if max_ref_rms > self.ref_threshold:
-                ratio = mic_rms / max_ref_rms
-                # If mic energy is low relative to system speaker (meaning it is pure echo leakage)
-                # AND mic energy is below an absolute active threshold (prevent muting loud user speech)
-                if ratio < self.ducking_threshold and mic_rms < 0.05:
-                    # Suppress the echo completely (setting to zero tells VAD it is silent)
-                    return np.zeros_like(mic_to_process), processed_timestamp
+            # If system speaker is active and mic energy indicates pure echo leakage
+            if max_ref_rms > self.ref_threshold and (mic_rms / max_ref_rms) < self.ducking_threshold and mic_rms < 0.05:
+                # Suppress the echo completely (setting to zero tells VAD it is silent)
+                self.cleaned_carryover = np.concatenate((self.cleaned_carryover, np.zeros_like(mic_to_process)))
+                if len(self.cleaned_carryover) >= N:
+                    chunk_to_return = self.cleaned_carryover[:N]
+                    self.cleaned_carryover = self.cleaned_carryover[N:]
+                    ret_timestamp = self.cleaned_timestamp
+                    self.cleaned_timestamp += N / self.sample_rate
+                    return chunk_to_return, ret_timestamp
+                return np.empty(0, dtype=np.float32), mic_timestamp
 
-        # Run WebRTC AEC in 10ms frames
+        # Run WebRTC AEC in 10ms frames (WITHOUT holding lock)
         clean_samples = []
 
         # Convert float32 arrays (-1.0 to 1.0) to PCM16 signed integers
@@ -222,30 +249,40 @@ class WebRTCAcousticEchoCanceller:
 
         cleaned_chunk = np.concatenate(clean_samples)
 
-        # Correlation veto
+        # Re-acquire lock for correlation veto, output buffering, and returning chunk
         with self.lock:
             max_ref_rms = max(self.ref_rms_history) if self.ref_rms_history else 0.0
             if max_ref_rms <= self.ref_threshold:
                 self._residual_buffer.clear()
                 self._residual_buffer_start_idx = None
-                return cleaned_chunk, processed_timestamp
+                self.cleaned_carryover = np.concatenate((self.cleaned_carryover, cleaned_chunk))
+            else:
+                if not self._residual_buffer:
+                    self._residual_buffer_start_idx = start_idx
+                self._residual_buffer.append(mic_to_process)
 
-            if not self._residual_buffer:
-                self._residual_buffer_start_idx = start_idx
-            self._residual_buffer.append(mic_to_process)
+                buffered_len = sum(len(c) for c in self._residual_buffer)
+                while buffered_len > self.correlation_window_samples and len(self._residual_buffer) > 1:
+                    dropped = self._residual_buffer.popleft()
+                    self._residual_buffer_start_idx += len(dropped)
+                    buffered_len -= len(dropped)
 
-            buffered_len = sum(len(c) for c in self._residual_buffer)
-            while buffered_len > self.correlation_window_samples and len(self._residual_buffer) > 1:
-                dropped = self._residual_buffer.popleft()
-                self._residual_buffer_start_idx += len(dropped)
-                buffered_len -= len(dropped)
+                window_audio = np.concatenate(self._residual_buffer)
+                window_rms = np.sqrt(np.mean(window_audio**2)) if len(window_audio) > 0 else 0.0
+                if window_rms > 1e-6 and self._max_correlation(window_audio, self._residual_buffer_start_idx) > self.correlation_threshold:
+                    self.cleaned_carryover = np.concatenate((self.cleaned_carryover, np.zeros_like(cleaned_chunk)))
+                else:
+                    self.cleaned_carryover = np.concatenate((self.cleaned_carryover, cleaned_chunk))
 
-            window_audio = np.concatenate(self._residual_buffer)
-            window_rms = np.sqrt(np.mean(window_audio**2)) if len(window_audio) > 0 else 0.0
-            if window_rms > 1e-6 and self._max_correlation(window_audio, self._residual_buffer_start_idx) > self.correlation_threshold:
-                return np.zeros_like(cleaned_chunk), processed_timestamp
+            # Return exactly N samples if we have enough
+            if len(self.cleaned_carryover) >= N:
+                chunk_to_return = self.cleaned_carryover[:N]
+                self.cleaned_carryover = self.cleaned_carryover[N:]
+                ret_timestamp = self.cleaned_timestamp
+                self.cleaned_timestamp += N / self.sample_rate
+                return chunk_to_return, ret_timestamp
 
-        return cleaned_chunk, processed_timestamp
+            return np.empty(0, dtype=np.float32), mic_timestamp
 
     def measure_segment_correlation_and_rms(self, segment_audio: np.ndarray, absolute_start_time: float) -> tuple[float, float]:
         """Calculates the maximum normalized cross-correlation of the segment's audio
